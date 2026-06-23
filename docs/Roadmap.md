@@ -13,30 +13,34 @@ The phases are sequenced so that the hardest, most important work happens first 
 ---
 
 ## Phase 0 — Project Setup
+
 **Duration:** 2–3 days  
 **Entry condition:** None  
 **Exit condition:** Empty project runs with one command, all tools verified working
 
 ### Tasks
 
-- [ ] Create GitHub repository, initialize with `.gitignore` for Python and Node
-- [ ] Set up project folder structure (see Architecture doc)
-- [ ] Create `docker-compose.yml` with three services: `backend`, `db`, `frontend`
-- [ ] Verify PostgreSQL container starts and is reachable from backend container
-- [ ] Create Python virtual environment, `requirements.txt` with initial dependencies
-- [ ] Create FastAPI app with a single `GET /health` endpoint returning `{ "status": "ok" }`
-- [ ] Create React app with Vite, verify it loads in browser
+- [x] Create GitHub repository, initialize with `.gitignore` for Python and Node
+- [x] Set up project folder structure (see Architecture doc)
+- [x] Create `docker-compose.yml` with three services: `backend`, `db`, `frontend`
+- [x] Verify PostgreSQL container starts and is reachable from backend container
+- [x] Create Python virtual environment, `requirements.txt` with initial dependencies
+- [x] Create FastAPI app with a single `GET /health` endpoint returning `{ "status": "ok" }`
+- [x] Create React app with Vite, verify it loads in browser
 - [ ] Write a `README.md` stub with setup instructions
 
 ### Deliverable
+
 Running `docker-compose up` starts all three services. `GET /health` returns 200. React app loads at `localhost:3000`.
 
 ### Why This Phase Matters
+
 Infrastructure problems discovered in Week 5 are catastrophic. Infrastructure problems discovered in Day 2 are a minor inconvenience. Always validate your foundation before building on it.
 
 ---
 
 ## Phase 1 — Analysis Engine (The Core)
+
 **Duration:** Weeks 1–3  
 **Entry condition:** Phase 0 complete  
 **Exit condition:** CLI script analyzes a real Python project and produces correct JSON output
@@ -63,9 +67,11 @@ This is the most important phase. Everything else is presentation. If the analys
 - [ ] Test against at least 5 real Python files from different open source projects
 
 #### Milestone Check
+
 Run `python -m backend.app.parser.ast_parser path/to/any_file.py` and see correctly extracted imports, classes, and functions printed to terminal. No crashes on any valid Python file.
 
 #### Common Pitfalls To Avoid
+
 - `from __future__ import annotations` — handle gracefully, don't crash
 - Files with syntax errors — catch `SyntaxError`, log the file, skip it, don't crash the whole analysis
 - Encoding issues — open files with `encoding='utf-8', errors='ignore'`
@@ -93,6 +99,7 @@ Run `python -m backend.app.parser.ast_parser path/to/any_file.py` and see correc
 - [ ] Serialize graph results to JSON
 
 #### Milestone Check
+
 Run analysis on a Python project with 20+ files. Top-ranked files intuitively make sense (entry points, shared utilities rank highly). Circular dependencies, if any, are correctly identified.
 
 #### Understanding The Algorithms (For Interviews)
@@ -121,18 +128,23 @@ Run analysis on a Python project with 20+ files. Top-ranked files intuitively ma
 - [ ] Test end-to-end on 3 different real Python projects of varying sizes
 
 #### Milestone Check
+
 ```bash
 python -m backend.app.pipeline path/to/project.zip
 # Produces: result.json with nodes, edges, scores, cycles
 ```
+
 The JSON output is correct, complete, and makes intuitive sense for a project you understand.
 
 #### The Import Resolution Problem (Explained)
+
 When a file contains `from .utils import helper`, the `.` means "same package as this file." To resolve this to an actual file path, you need to know:
+
 1. The path of the current file
 2. The root of the Python package (where `__init__.py` lives)
 
 Resolution algorithm:
+
 ```
 current file:  myproject/auth/session.py
 import:        from .utils import helper
@@ -140,6 +152,7 @@ resolved:      myproject/auth/utils.py  (same directory + utils.py)
 ```
 
 For `from ..config import settings`:
+
 ```
 current file:  myproject/auth/session.py
 import:        from ..config import settings
@@ -151,6 +164,7 @@ Unresolvable imports (third-party packages like `import requests`) should be tra
 ---
 
 ## Phase 2 — API Layer
+
 **Duration:** Weeks 4–5  
 **Entry condition:** Phase 1 complete — `AnalysisPipeline` produces correct JSON for any Python zip  
 **Exit condition:** All API endpoints functional and testable via Swagger UI at `/docs`
@@ -170,6 +184,7 @@ Unresolvable imports (third-party packages like `import requests`) should be tra
 - [ ] Handle failures gracefully — if analysis crashes, set status to `"failed"` with error message
 
 #### Milestone Check
+
 Upload a zip via `curl` or Swagger UI. Poll status endpoint until `"complete"`. Verify results are stored in PostgreSQL by querying the database directly.
 
 ---
@@ -186,9 +201,11 @@ Upload a zip via `curl` or Swagger UI. Poll status endpoint until `"complete"`. 
 - [ ] Write integration tests for all endpoints using FastAPI's `TestClient`
 
 #### Milestone Check
+
 All endpoints return correct data. Frontend can be started and make API calls without CORS errors. Impact analysis for a known file returns the correct set of dependents.
 
 #### The Impact Analysis Algorithm (Explained)
+
 "What breaks if I change file X?" means: find all files that directly or transitively import X.
 
 In graph terms: find all nodes from which X is reachable following edge direction in reverse.
@@ -206,6 +223,7 @@ Transitive dependents = all ancestors (`nx.ancestors(G, target_file)`)
 ---
 
 ## Phase 3 — Frontend
+
 **Duration:** Weeks 6–8  
 **Entry condition:** Phase 2 complete — all API endpoints functional  
 **Exit condition:** Project is demo-ready and portfolio-publishable
@@ -226,6 +244,7 @@ Transitive dependents = all ancestors (`nx.ancestors(G, target_file)`)
 - [ ] Show loading state while graph data is fetching
 
 #### Milestone Check
+
 Real repo graph renders correctly in browser. Nodes are colored and sized by criticality. Graph is zoomable and pannable. High-criticality nodes are visually obvious without reading labels.
 
 ---
@@ -245,6 +264,7 @@ Real repo graph renders correctly in browser. Nodes are colored and sized by cri
 - [ ] Add "clear selection" behavior when clicking empty canvas space
 
 #### Milestone Check
+
 Full interaction flow works: click a node → sidebar updates → dependents highlight on graph → clicking away clears selection. Cycle warnings show correctly if cycles exist.
 
 ---
@@ -263,6 +283,7 @@ Full interaction flow works: click a node → sidebar updates → dependents hig
 - [ ] (Optional) Deploy: Railway or Render for backend + PostgreSQL, Vercel for frontend
 
 #### Milestone Check
+
 A person who has never seen the project can clone the repo, run `docker-compose up`, and successfully analyze a Python project within 5 minutes. README is clear enough that no verbal explanation is needed.
 
 ---
@@ -270,12 +291,15 @@ A person who has never seen the project can clone the repo, run `docker-compose 
 ## Version Ladder Summary
 
 ### MVP — What's Described Above
+
 **Timeline:** 8 weeks  
 **Resume claim:** "Built a static analysis tool that parses Python repositories into directed dependency graphs and applies PageRank and Betweenness Centrality to identify architecturally critical files and compute change impact, with an interactive React visualization."
 
 ### v2 — AI Explanation Layer
+
 **Timeline:** 3–4 weeks after MVP  
 **What to add:**
+
 - `POST /api/explain/{repo_id}` endpoint
 - Graph traversal to extract relevant context for a user's question
 - LLM call with structured graph context as input, natural language explanation as output
@@ -284,8 +308,10 @@ A person who has never seen the project can clone the repo, run `docker-compose 
 **Resume addition:** "Extended with an LLM layer that generates architectural explanations grounded in graph-traversal context rather than raw code retrieval, producing structured, verifiable answers."
 
 ### v3 — Behavioral Coupling (Stretch Goal)
+
 **Timeline:** 4–6 weeks after v2  
 **What to add:**
+
 - Git history analysis using `gitpython`
 - Co-change coupling matrix: files that change together frequently
 - New edge type in graph: "behavioral coupling" vs "structural coupling"
@@ -297,13 +323,15 @@ A person who has never seen the project can clone the repo, run `docker-compose 
 
 ## Risk Register
 
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| Import resolution breaks on complex projects | High | High | Handle failures gracefully, mark unresolved imports, don't crash |
-| Phase 1 takes longer than 3 weeks | Medium | High | Descope to file-level only (no function-level nodes), cut test coverage target |
-| Cytoscape rendering slow on large graphs (500+ nodes) | Medium | Medium | Add node filtering by criticality threshold, only render top N nodes |
-| PostgreSQL migration issues slow Phase 2 | Low | Medium | Keep schema simple, use Alembic from day one |
-| Scope creep back into v2/v3 features | High | Medium | Refer back to this document, defer all non-MVP features explicitly |
+
+| Risk                                                  | Likelihood | Impact | Mitigation                                                                     |
+| ----------------------------------------------------- | ---------- | ------ | ------------------------------------------------------------------------------ |
+| Import resolution breaks on complex projects          | High       | High   | Handle failures gracefully, mark unresolved imports, don't crash               |
+| Phase 1 takes longer than 3 weeks                     | Medium     | High   | Descope to file-level only (no function-level nodes), cut test coverage target |
+| Cytoscape rendering slow on large graphs (500+ nodes) | Medium     | Medium | Add node filtering by criticality threshold, only render top N nodes           |
+| PostgreSQL migration issues slow Phase 2              | Low        | Medium | Keep schema simple, use Alembic from day one                                   |
+| Scope creep back into v2/v3 features                  | High       | Medium | Refer back to this document, defer all non-MVP features explicitly             |
+
 
 ---
 

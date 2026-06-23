@@ -1,0 +1,133 @@
+# =========================
+
+# Python
+
+# =========================
+
+**pycache**/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+
+venv/
+.venv/
+env/
+ENV/
+
+# Distribution / Packaging
+
+build/
+dist/
+*.egg-info/
+
+# Testing
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type Checking
+
+.mypy_cache/
+.pyre/
+.pytype/
+
+# Jupyter
+
+.ipynb_checkpoints/
+
+# =========================
+
+# Environment Variables
+
+# =========================
+
+.env
+.env.*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# =========================
+
+# Logs
+
+# =========================
+
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+
+# Node.js / Frontend
+
+# =========================
+
+node_modules/
+dist/
+.next/
+.nuxt/
+out/
+
+# =========================
+
+# IDEs / Editors
+
+# =========================
+
+.vscode/
+.idea/
+.cursor/
+
+# =========================
+
+# OS Files
+
+# =========================
+
+.DS_Store
+Thumbs.db
+
+# =========================
+
+# Docker
+
+# =========================
+
+*.pid
+
+# =========================
+
+# Database
+
+# =========================
+
+*.db
+
+# =========================
+
+# Ripple Project Specific
+
+# =========================
+
+# Cloned repositories for analysis
+
+repos/
+
+# Temporary analysis outputs
+
+cache/
+tmp/
+
+# Generated graph exports
+
+exports/
+
+# Local uploads / extracted archives
+
+uploads/

@@ -1,0 +1,27 @@
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: ripple
+      POSTGRES_USER: ripple
+      POSTGRES_PASSWORD: ripple
+    ports:
+      - "5432:5432"
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://ripple:ripple@db:5432/ripple
+      TEMP_DIR: /tmp/ripple
+      MAX_REPO_SIZE_MB: 100
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
