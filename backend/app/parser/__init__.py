@@ -1,3 +1,3 @@
-from app.parser.models import ClassInfo, FileAnalysis, FunctionInfo
+from app.parser.models import ClassInfo, FileAnalysis, FunctionInfo, ImportInfo
 
-__all__ = ["ClassInfo", "FileAnalysis", "FunctionInfo"]
+__all__ = ["ClassInfo", "FileAnalysis", "FunctionInfo", "ImportInfo"]

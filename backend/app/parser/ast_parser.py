@@ -5,7 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
-from app.parser.models import ClassInfo, FileAnalysis, FunctionInfo
+from app.parser.models import ClassInfo, FileAnalysis, FunctionInfo, ImportInfo
 
 logger = logging.getLogger(__name__)
 
@@ -33,23 +33,38 @@ class ASTParser:
                 has_syntax_error=True,
             )
 
-        imports: list[str] = []
+        imports: list[ImportInfo] = []
         module_names: list[str] = []
         classes: list[ClassInfo] = []
         functions: list[FunctionInfo] = []
+        methods: list[FunctionInfo] = []
 
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     module = alias.name
-                    imports.append(self._format_import(module, alias.asname))
+                    imports.append(
+                        ImportInfo(
+                            module=module,
+                            alias=alias.asname,
+                            type="import",
+                        )
+                    )
                     module_names.append(module)
             elif isinstance(node, ast.ImportFrom):
                 if node.module == "__future__":
                     continue
                 module = self._resolve_import_module(normalized_path, node)
                 if module:
-                    imports.append(self._format_from_import(module, node.names))
+                    for alias in node.names:
+                        imports.append(
+                            ImportInfo(
+                                module=module,
+                                name=alias.name,
+                                alias=alias.asname,
+                                type="from_import",
+                            )
+                        )
                     module_names.append(module)
             elif isinstance(node, ast.ClassDef):
                 if self._is_top_level(tree, node):
@@ -57,15 +72,20 @@ class ASTParser:
                         ClassInfo(
                             name=node.name,
                             bases=self._extract_base_names(node),
+                            methods=self._extract_method_names(node),
                         )
                     )
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 parent = self._parent_class_name(tree, node)
-                if parent is not None or self._is_top_level(tree, node):
-                    functions.append(FunctionInfo(name=node.name, parent_class=parent))
+                if parent is not None:
+                    methods.append(
+                        FunctionInfo(name=node.name, parent_class=parent)
+                    )
+                elif self._is_top_level(tree, node):
+                    functions.append(FunctionInfo(name=node.name))
 
         resolved_deps, external_deps = self._classify_dependencies(
-            normalized_path, module_names
+            module_names
         )
 
         return FileAnalysis(
@@ -75,23 +95,17 @@ class ASTParser:
             external_deps=external_deps,
             classes=classes,
             functions=functions,
+            methods=methods,
             line_count=line_count,
             has_syntax_error=False,
         )
 
-    def _format_import(self, module: str, asname: str | None) -> str:
-        if asname:
-            return f"import {module} as {asname}"
-        return f"import {module}"
-
-    def _format_from_import(
-        self, module: str, names: list[ast.alias]
-    ) -> str:
-        imported = ", ".join(
-            f"{alias.name} as {alias.asname}" if alias.asname else alias.name
-            for alias in names
-        )
-        return f"from {module} import {imported}"
+    def _extract_method_names(self, node: ast.ClassDef) -> list[str]:
+        methods: list[str] = []
+        for child in node.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                methods.append(child.name)
+        return methods
 
     def _resolve_import_module(
         self, file_path: str, node: ast.ImportFrom
@@ -131,28 +145,41 @@ class ASTParser:
     def _parent_class_name(
         self, tree: ast.AST, node: ast.AST
     ) -> str | None:
-        for child in tree.body:
+        return self._find_parent_class(tree.body, node)
+
+    def _find_parent_class(
+        self, body: list[ast.stmt], node: ast.AST
+    ) -> str | None:
+        for child in body:
             if isinstance(child, ast.ClassDef):
                 if node in ast.walk(child) and node is not child:
-                    return child.name
+                    if any(
+                        stmt is node
+                        for stmt in child.body
+                        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    ):
+                        return child.name
+                    nested = self._find_parent_class(child.body, node)
+                    if nested is not None:
+                        return nested
         return None
 
     def _classify_dependencies(
-        self, file_path: str, module_names: list[str]
+        self, module_names: list[str]
     ) -> tuple[list[str], list[str]]:
+        if not self.project_files:
+            return [], self._external_modules(module_names)
+
         resolved: list[str] = []
         external: list[str] = []
-
         seen_resolved: set[str] = set()
         seen_external: set[str] = set()
 
         for module in module_names:
-            top_level = module.split(".")[0]
             resolved_path = self._module_to_file_path(module)
+            top_level = module.split(".")[0]
 
-            if resolved_path and (
-                not self.project_files or resolved_path in self.project_files
-            ):
+            if resolved_path is not None:
                 if resolved_path not in seen_resolved:
                     seen_resolved.add(resolved_path)
                     resolved.append(resolved_path)
@@ -162,7 +189,20 @@ class ASTParser:
 
         return resolved, external
 
+    def _external_modules(self, module_names: list[str]) -> list[str]:
+        external: list[str] = []
+        seen: set[str] = set()
+        for module in module_names:
+            top_level = module.split(".")[0]
+            if top_level not in seen:
+                seen.add(top_level)
+                external.append(top_level)
+        return external
+
     def _module_to_file_path(self, module: str) -> str | None:
+        if not self.project_files:
+            return None
+
         parts = module.split(".")
         candidates = [
             "/".join(parts) + ".py",
@@ -172,11 +212,8 @@ class ASTParser:
             candidates.append("/".join(parts[:-1]) + ".py")
 
         for candidate in candidates:
-            if not self.project_files or candidate in self.project_files:
-                if not self.project_files:
-                    return candidate
-                if candidate in self.project_files:
-                    return candidate
+            if candidate in self.project_files:
+                return candidate
         return None
 
 
@@ -186,7 +223,7 @@ def _print_analysis(analysis: FileAnalysis) -> None:
     print(f"has_syntax_error: {analysis.has_syntax_error}")
     print("imports:")
     for item in analysis.imports:
-        print(f"  - {item}")
+        print(f"  - {item.display}")
     print("resolved_deps:")
     for item in analysis.resolved_deps:
         print(f"  - {item}")
@@ -195,14 +232,16 @@ def _print_analysis(analysis: FileAnalysis) -> None:
         print(f"  - {item}")
     print("classes:")
     for cls in analysis.classes:
-        bases = ", ".join(cls.bases) if cls.bases else "(none)"
-        print(f"  - {cls.name}({bases})")
+        if cls.bases:
+            bases = ", ".join(cls.bases)
+            print(f"  - {cls.name} (bases: {bases})")
+        else:
+            print(f"  - {cls.name}")
+        for method in cls.methods:
+            print(f"      - {method}")
     print("functions:")
     for fn in analysis.functions:
-        if fn.parent_class:
-            print(f"  - {fn.parent_class}.{fn.name}")
-        else:
-            print(f"  - {fn.name}")
+        print(f"  - {fn.name}")
 
 
 def main() -> None:

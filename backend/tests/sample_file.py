@@ -1,10 +1,20 @@
-import os
-from pathlib import Path
+# sample.py
 
+import os
+import numpy as np
+from pathlib import Path
+from collections import defaultdict
 
 class User:
-    print(Path(__file__).parent)
+    def get_name(self):
+        pass
 
+class Admin(User):
+    def promote(self):
+        pass
 
-def hello():
+def login():
+    pass
+
+def logout():
     pass
