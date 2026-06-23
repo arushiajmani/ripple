@@ -1,5 +1,19 @@
 from dataclasses import dataclass, field
 
+SKIP_DIRS = frozenset({
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "node_modules",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "dist",
+    "build",
+    ".eggs",
+})
+
 
 @dataclass
 class ImportInfo:

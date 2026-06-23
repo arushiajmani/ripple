@@ -18,7 +18,7 @@
 | Separate module functions vs class methods | Yes |
 | `resolved_deps` / `external_deps` classification | Yes (requires `project_files`) |
 | `FileAnalysis` dataclass | Yes |
-| CLI: `python -m app.parser.ast_parser <file>` | Yes |
+| CLI: `python -m app.parser.cli <file-or-repo>` | Yes |
 | Unit tests in `tests/test_parser.py` | No |
 | Repo ingestion / batch parsing | No |
 | Test against 5 real open-source files | No |
@@ -149,8 +149,20 @@ uvicorn app.main:app --reload
 **Files to read in order:**
 
 1. `backend/app/parser/models.py` — output shapes
-2. `backend/app/parser/ast_parser.py` — parsing logic
-3. `backend/tests/sample_file.py` — small file to try against
+2. `backend/app/parser/ast_parser.py` — single-file AST parsing (`ASTParser`)
+3. `backend/app/parser/dependencies.py` — module → file resolution
+4. `backend/app/parser/repository.py` — repo walk + batch parse
+5. `backend/app/parser/cli.py` — terminal output
+6. `backend/tests/sample_file.py` — small file to try against
+
+```text
+backend/app/parser/
+├── models.py         # FileAnalysis, ImportInfo, SKIP_DIRS
+├── ast_parser.py     # ASTParser.parse_file
+├── dependencies.py   # classify_dependencies, module_to_file_path
+├── repository.py     # collect_python_files, parse_repository
+└── cli.py            # python -m app.parser.cli
+```
 
 ---
 
@@ -423,8 +435,11 @@ FileAnalysis (full)
 
 ```bash
 source .venv/bin/activate
-python -m app.parser.ast_parser tests/sample_file.py
+python -m app.parser.cli tests/sample_file.py
+python -m app.parser.cli tests/fixtures/mini_repo myapp/auth.py
 ```
+
+`python -m app.parser.ast_parser` still works (shim to the same CLI).
 
 Expected sections: `imports`, `resolved_deps` (empty), `external_deps`, `classes` (with nested methods), `functions` (module-level only).
 
@@ -432,15 +447,12 @@ Expected sections: `imports`, `resolved_deps` (empty), `external_deps`, `classes
 
 ```python
 from pathlib import Path
-from app.parser.ast_parser import ASTParser
+from app.parser.repository import parse_repository
 
 root = Path("path/to/your/repo")
-project_files = {p.relative_to(root).as_posix() for p in root.rglob("*.py")}
-parser = ASTParser(project_files=project_files)
+analyses = parse_repository(root)
 
-for path in sorted(project_files):
-    content = (root / path).read_text()
-    analysis = parser.parse_file(path, content)
+for path, analysis in analyses.items():
     print(path, "→", analysis.resolved_deps, "|", analysis.external_deps)
 ```
 

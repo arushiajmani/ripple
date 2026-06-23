@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.parser.repo_parser import collect_python_files, parse_repository
+from app.parser.repository import collect_python_files, parse_repository
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_repo"
 
@@ -36,3 +36,13 @@ def test_parse_repository_external_only_for_utils() -> None:
 
     assert utils.resolved_deps == ["myapp/models.py"]
     assert utils.external_deps == ["json"]
+
+
+def test_module_resolution_matches_path_suffix() -> None:
+    """Import app.parser.models resolves when repo root is above backend/."""
+    repo_root = Path(__file__).resolve().parents[2]
+    analyses = parse_repository(repo_root)
+    parser_init = analyses["backend/app/parser/__init__.py"]
+
+    assert "backend/app/parser/models.py" in parser_init.resolved_deps
+    assert "app" not in parser_init.external_deps

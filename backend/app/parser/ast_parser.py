@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import ast
 import logging
-import sys
 from pathlib import Path
 
-from app.parser.models import ClassInfo, FileAnalysis, FunctionInfo, ImportInfo
+from app.parser.dependencies import classify_dependencies
+from app.parser.models import (
+    ClassInfo,
+    FileAnalysis,
+    FunctionInfo,
+    ImportInfo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +89,8 @@ class ASTParser:
                 elif self._is_top_level(tree, node):
                     functions.append(FunctionInfo(name=node.name))
 
-        resolved_deps, external_deps = self._classify_dependencies(
-            module_names
+        resolved_deps, external_deps = classify_dependencies(
+            module_names, self.project_files
         )
 
         return FileAnalysis(
@@ -164,101 +169,8 @@ class ASTParser:
                         return nested
         return None
 
-    def _classify_dependencies(
-        self, module_names: list[str]
-    ) -> tuple[list[str], list[str]]:
-        if not self.project_files:
-            return [], self._external_modules(module_names)
-
-        resolved: list[str] = []
-        external: list[str] = []
-        seen_resolved: set[str] = set()
-        seen_external: set[str] = set()
-
-        for module in module_names:
-            resolved_path = self._module_to_file_path(module)
-            top_level = module.split(".")[0]
-
-            if resolved_path is not None:
-                if resolved_path not in seen_resolved:
-                    seen_resolved.add(resolved_path)
-                    resolved.append(resolved_path)
-            elif top_level not in seen_external:
-                seen_external.add(top_level)
-                external.append(top_level)
-
-        return resolved, external
-
-    def _external_modules(self, module_names: list[str]) -> list[str]:
-        external: list[str] = []
-        seen: set[str] = set()
-        for module in module_names:
-            top_level = module.split(".")[0]
-            if top_level not in seen:
-                seen.add(top_level)
-                external.append(top_level)
-        return external
-
-    def _module_to_file_path(self, module: str) -> str | None:
-        if not self.project_files:
-            return None
-
-        parts = module.split(".")
-        candidates = [
-            "/".join(parts) + ".py",
-            "/".join(parts) + "/__init__.py",
-        ]
-        if len(parts) > 1:
-            candidates.append("/".join(parts[:-1]) + ".py")
-
-        for candidate in candidates:
-            if candidate in self.project_files:
-                return candidate
-        return None
-
-
-def _print_analysis(analysis: FileAnalysis) -> None:
-    print(f"file_path: {analysis.file_path}")
-    print(f"line_count: {analysis.line_count}")
-    print(f"has_syntax_error: {analysis.has_syntax_error}")
-    print("imports:")
-    for item in analysis.imports:
-        print(f"  - {item.display}")
-    print("resolved_deps:")
-    for item in analysis.resolved_deps:
-        print(f"  - {item}")
-    print("external_deps:")
-    for item in analysis.external_deps:
-        print(f"  - {item}")
-    print("classes:")
-    for cls in analysis.classes:
-        if cls.bases:
-            bases = ", ".join(cls.bases)
-            print(f"  - {cls.name} (bases: {bases})")
-        else:
-            print(f"  - {cls.name}")
-        for method in cls.methods:
-            print(f"      - {method}")
-    print("functions:")
-    for fn in analysis.functions:
-        print(f"  - {fn.name}")
-
-
-def main() -> None:
-    if len(sys.argv) < 2:
-        print("Usage: python -m app.parser.ast_parser <path-to-file.py>", file=sys.stderr)
-        sys.exit(1)
-
-    target = Path(sys.argv[1])
-    if not target.is_file():
-        print(f"File not found: {target}", file=sys.stderr)
-        sys.exit(1)
-
-    content = target.read_text(encoding="utf-8", errors="ignore")
-    parser = ASTParser()
-    analysis = parser.parse_file(target.as_posix(), content)
-    _print_analysis(analysis)
-
 
 if __name__ == "__main__":
+    from app.parser.cli import main
+
     main()

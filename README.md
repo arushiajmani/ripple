@@ -51,7 +51,10 @@ ripple/
 │   │   ├── main.py              # FastAPI app (health check)
 │   │   └── parser/
 │   │       ├── models.py        # FileAnalysis, ImportInfo, …
-│   │       └── ast_parser.py    # ASTParser + CLI
+│   │       ├── ast_parser.py    # ASTParser (single-file parsing)
+│   │       ├── dependencies.py  # resolved vs external classification
+│   │       ├── repository.py    # walk repo, parse_repository()
+│   │       └── cli.py           # terminal output
 │   └── tests/
 │       └── sample_file.py       # small file to try the parser on
 ├── frontend/
@@ -97,10 +100,10 @@ cd backend
 source .venv/bin/activate   # if using a venv
 pip install -r requirements.txt
 
-python -m app.parser.ast_parser tests/sample_file.py
+python -m app.parser.cli tests/sample_file.py
 ```
 
-**Important:** use `python -m app.parser.ast_parser` from `backend/`, not `python tests/...`, or Python won't find the `app` package.
+**Important:** use `python -m app.parser.cli` from `backend/`, not `python tests/...`, or Python won't find the `app` package. (`python -m app.parser.ast_parser` is a backward-compatible alias.)
 
 ### What you get (single file, no repo context)
 
@@ -117,6 +120,7 @@ Pass `project_files` when you know all `.py` paths in the repo. Internal imports
 ```python
 from pathlib import Path
 from app.parser.ast_parser import ASTParser
+from app.parser.repository import parse_repository
 
 root = Path("path/to/repo")
 project_files = {p.relative_to(root).as_posix() for p in root.rglob("*.py")}
@@ -173,7 +177,7 @@ npm run dev
 * [x] Classes (name, bases, methods)
 * [x] Module-level functions vs class methods (separate lists)
 * [x] `resolved_deps` / `external_deps` when `project_files` is set
-* [x] CLI: `python -m app.parser.ast_parser <file>`
-* [ ] Unit tests (`tests/test_parser.py`)
+* [x] CLI: `python -m app.parser.cli <file-or-repo>`
+* [x] Unit tests (`tests/test_parser.py`)
 * [ ] Repo ingestion + batch parsing
 * [ ] `GraphBuilder`
