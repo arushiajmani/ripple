@@ -12,15 +12,19 @@
 | Task | Done? |
 |------|-------|
 | `ASTParser` in `backend/app/parser/ast_parser.py` | Yes |
+| `dependencies.py` — module → file resolution | Yes |
+| `repository.py` — `parse_repository()` | Yes |
+| `cli.py` — terminal output | Yes |
 | Structured `ImportInfo` (module, alias, type) | Yes |
 | Absolute / from / relative / aliased imports | Yes (logic in code; needs more tests) |
 | Extract classes (name + bases + methods) | Yes |
 | Separate module functions vs class methods | Yes |
 | `resolved_deps` / `external_deps` classification | Yes (requires `project_files`) |
+| Suffix path matching (`app.parser` → `backend/app/parser/…`) | Yes |
 | `FileAnalysis` dataclass | Yes |
 | CLI: `python -m app.parser.cli <file-or-repo>` | Yes |
-| Unit tests in `tests/test_parser.py` | No |
-| Repo ingestion / batch parsing | No |
+| Unit tests in `tests/test_parser.py` | Yes |
+| `IngestionService` (zip upload, filters) | No |
 | Test against 5 real open-source files | No |
 
 ---
@@ -30,22 +34,24 @@
 Ripple turns a Python repo into a **dependency graph** and scores each file for architectural importance.
 
 ```
-zip / repo  →  IngestionService  →  list of .py files
-                                        │
-                                        ▼
-                                  ASTParser (per file)  →  FileAnalysis
-                                        │
-                                        ▼
-                                  GraphBuilder  →  nx.DiGraph
-                                        │
-                                        ▼
-                                  AlgorithmEngine  →  PageRank, cycles, scores
-                                        │
-                                        ▼
-                                  PostgreSQL / JSON / API / React graph
+zip / repo  →  IngestionService (planned)  →  list of .py files
+                                                    │
+                    parse_repository() ◄────────────┘  (shipped today)
+                            │
+                            ▼
+                      ASTParser (per file)  →  FileAnalysis
+                            │
+                            ▼
+                      GraphBuilder (planned)  →  nx.DiGraph
+                            │
+                            ▼
+                      AlgorithmEngine (planned)  →  PageRank, cycles, scores
+                            │
+                            ▼
+                      PostgreSQL / JSON / API / React graph
 ```
 
-**Only the parser box exists today.** Everything else is planned.
+**Parser + repo batch parsing exist today.** Ingestion, graph, and algorithms are planned.
 
 **Design choices worth remembering:**
 
@@ -54,6 +60,7 @@ zip / repo  →  IngestionService  →  list of .py files
 - **Parser is pure** — `parse_file(path, content)` takes a string; caller handles disk I/O.
 - **Structured imports internally, readable strings for display** — `ImportInfo` in the model; `.display` for CLI.
 - **No fake resolution** — `resolved_deps` only populated when `project_files` is set and a path actually exists in the project.
+- **Light module split** — `ast_parser.py` (walk tree), `dependencies.py` (resolve imports), `repository.py` (batch parse), `cli.py` (display). One concern per file.
 
 ---
 
@@ -85,7 +92,7 @@ ImportInfo(module="pathlib", name="Path", type="from_import")
 | Single file (no `project_files`) | `[]` | top-level packages from imports (`os`, `numpy`, …) |
 | Repo (`project_files` set) | paths that exist in the project (`myapp/utils.py`) | everything else (`os`, `requests`, …) |
 
-True file-to-file resolution only happens when you pass the full set of project `.py` paths. A future `IngestionService` will collect those and call `parse_file` per file.
+True file-to-file resolution only happens when you pass the full set of project `.py` paths — `parse_repository()` does this automatically. A future `IngestionService` will add zip upload and smarter filtering.
 
 We also removed a short-lived `modules` field — `imports` + `resolved_deps` + `external_deps` cover the use cases without a third redundant list.
 
@@ -118,6 +125,28 @@ We also removed a short-lived `modules` field — `imports` + `resolved_deps` + 
 | `User.get_name` | `methods`, `parent_class="User"` |
 | `def helper():` inside `get_name` | skipped (nested function) |
 | method on nested `Inner` class | `parent_class="Inner"`, not outer class |
+
+### 6. Parser package split (light modular layout)
+
+**Before:** one `ast_parser.py` (~330 lines) mixed AST walking, dependency resolution, repo walking, and CLI printing.
+
+**Now:**
+
+| File | Role |
+|------|------|
+| `models.py` | `FileAnalysis`, `ImportInfo`, `SKIP_DIRS` |
+| `ast_parser.py` | `ASTParser.parse_file` — AST walk only |
+| `dependencies.py` | `classify_dependencies`, `module_to_file_path` — pure functions |
+| `repository.py` | `collect_python_files`, `parse_repository` |
+| `cli.py` | `print_analysis`, `main` — `python -m app.parser.cli` |
+
+`GraphBuilder` will reuse `dependencies.py` when it ships. `IngestionService` will eventually own file discovery; `repository.py` is the interim orchestrator.
+
+### 7. Suffix matching for internal imports
+
+When the repo root is above the Python package (e.g. ripple root contains `backend/app/parser/…`), an import like `from app.parser.models import X` must resolve to `backend/app/parser/models.py`, not be misclassified as external `app`.
+
+`dependencies.module_to_file_path` tries exact path candidates first, then **suffix matches** on `project_files`. This fixed false `external_deps: app` when scanning the full project.
 
 ---
 
@@ -265,9 +294,29 @@ Optional constructor args (for graph building):
 
 | Mode | How | `resolved_deps` |
 |------|-----|-----------------|
-| CLI default | `ASTParser()` | always `[]` |
-| Manual repo | collect `project_files`, one parser, loop `parse_file` | real internal paths |
-| Future | `IngestionService` does the above automatically | same |
+| CLI single file | `python -m app.parser.cli file.py` | `[]` |
+| CLI repo | `python -m app.parser.cli path/to/repo` | internal paths per file |
+| Python API | `parse_repository(root)` | same as CLI repo |
+| Manual | `ASTParser(project_files=…)` + loop | same |
+
+---
+
+### 2b. `parse_repository` (`repository.py`)
+
+Walks a directory, skips `SKIP_DIRS` (`.git`, `venv`, `__pycache__`, …), builds `project_files`, parses every `.py` file, returns:
+
+```python
+dict[str, FileAnalysis]  # keys are paths relative to repo root
+```
+
+```python
+from app.parser.repository import parse_repository
+
+analyses = parse_repository("tests/fixtures/mini_repo")
+auth = analyses["myapp/auth.py"]
+# auth.resolved_deps → ["myapp/models.py", "myapp/utils.py"]
+# auth.external_deps → ["os", "requests"]
+```
 
 ---
 
@@ -378,15 +427,19 @@ level = 1        →  stay in auth
 module = utils   →  auth.utils
 ```
 
-#### Module → file path (`_module_to_file_path`)
+#### Module → file path (`dependencies.module_to_file_path`)
 
-Only runs when `project_files` is set. Module `myapp.utils` tries, in order:
+Lives in `dependencies.py` (not on `ASTParser`). Only runs when `project_files` is set.
+
+Module `myapp.utils` tries, in order:
 
 1. `myapp/utils.py`
 2. `myapp/utils/__init__.py`
 3. `myapp.py` (edge case for `myapp.something`)
 
-Returns `None` if no candidate is in `project_files` → import goes to `external_deps`.
+If none match exactly, **suffix match**: any `project_files` entry ending in `/myapp/utils.py` (handles `backend/tests/fixtures/mini_repo/myapp/utils.py` when repo root is higher).
+
+Returns `None` if no match → import goes to `external_deps`.
 
 **Without `project_files`:** no path guessing at all. Everything unidentified stays in `external_deps` (by top-level package name).
 
@@ -405,7 +458,9 @@ No exception propagates. Callers can skip bad files and continue analyzing the r
 
 ---
 
-### 8. End-to-end flow in `parse_file`
+### 8. End-to-end flow
+
+**Single file** (`ASTParser.parse_file`):
 
 ```
 content, file_path
@@ -414,17 +469,28 @@ content, file_path
 ast.parse() ──SyntaxError──► FileAnalysis(has_syntax_error=True)
        │
        ▼
-   ast.walk(tree)
-       │
-       ├── Import / ImportFrom  → imports[], module_names[]
-       ├── ClassDef (top-level) → classes[] (+ methods on ClassInfo)
-       └── FunctionDef          → functions[] or methods[]
+   ast.walk(tree)  →  imports, classes, functions, methods
        │
        ▼
-_classify_dependencies(module_names)
+dependencies.classify_dependencies(module_names, project_files)
        │
        ▼
-FileAnalysis (full)
+FileAnalysis
+```
+
+**Whole repo** (`parse_repository`):
+
+```
+repo_path
+    │
+    ▼
+collect_python_files()  →  project_files set
+    │
+    ▼
+ASTParser(project_files) + parse_file() for each .py
+    │
+    ▼
+dict[str, FileAnalysis]
 ```
 
 ---
@@ -436,12 +502,15 @@ FileAnalysis (full)
 ```bash
 source .venv/bin/activate
 python -m app.parser.cli tests/sample_file.py
+python -m app.parser.cli tests/fixtures/mini_repo
 python -m app.parser.cli tests/fixtures/mini_repo myapp/auth.py
 ```
 
 `python -m app.parser.ast_parser` still works (shim to the same CLI).
 
-Expected sections: `imports`, `resolved_deps` (empty), `external_deps`, `classes` (with nested methods), `functions` (module-level only).
+Expected sections: `imports`, `resolved_deps`, `external_deps`, `classes` (with nested methods), `functions` (module-level only).
+
+For repo mode, `resolved_deps` paths are relative to the repo root you pass in.
 
 **Repo-aware parsing in a REPL:**
 

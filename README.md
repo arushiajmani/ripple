@@ -7,12 +7,13 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 ### Shipped
 
 * **AST parser** — extract imports, classes, functions, and methods from a `.py` file
-* **Dependency hints** — classify imports as internal (`resolved_deps`) vs stdlib/third-party (`external_deps`) when project context is provided
-* **CLI** — inspect parser output from the terminal
+* **Repo batch parsing** — walk a directory and parse all `.py` files via `parse_repository()`
+* **Dependency classification** — internal (`resolved_deps`) vs stdlib/third-party (`external_deps`) when project context is provided
+* **CLI** — inspect single-file or whole-repo output from the terminal
 
 ### Planned
 
-* Full-repo ingestion and batch parsing
+* Zip upload ingestion (`IngestionService`)
 * File-level dependency graphs (NetworkX)
 * Cycle detection and criticality scores (PageRank, centrality)
 * Impact analysis for proposed changes
@@ -56,7 +57,10 @@ ripple/
 │   │       ├── repository.py    # walk repo, parse_repository()
 │   │       └── cli.py           # terminal output
 │   └── tests/
-│       └── sample_file.py       # small file to try the parser on
+│       ├── sample_file.py       # single file to try the parser on
+│       ├── test_parser.py       # parser unit tests
+│       └── fixtures/
+│           └── mini_repo/       # tiny repo for resolved vs external deps
 ├── frontend/
 ├── docs/
 │   ├── learn.md                 # code study guide (read this to understand the parser)
@@ -93,47 +97,59 @@ Health check: `GET http://localhost:8000/health` → `{"status": "ok"}`
 
 ## Parser CLI
 
-The parser is the first shipped component. Run it from `backend/`:
+Run from `backend/`:
 
 ```bash
 cd backend
 source .venv/bin/activate   # if using a venv
 pip install -r requirements.txt
 
+# single file
 python -m app.parser.cli tests/sample_file.py
+
+# whole repo (resolved vs external deps)
+python -m app.parser.cli tests/fixtures/mini_repo
+
+# one file from repo context
+python -m app.parser.cli tests/fixtures/mini_repo myapp/auth.py
 ```
 
 **Important:** use `python -m app.parser.cli` from `backend/`, not `python tests/...`, or Python won't find the `app` package. (`python -m app.parser.ast_parser` is a backward-compatible alias.)
 
-### What you get (single file, no repo context)
+### Single file (no repo context)
 
-* `imports` — structured import list with human-readable display
-* `resolved_deps` — empty (no project context to resolve against)
-* `external_deps` — top-level packages seen in imports (`os`, `numpy`, …)
-* `classes` — name, bases, nested method names
-* `functions` — module-level functions only
+* `resolved_deps` — empty
+* `external_deps` — top-level packages from imports (`os`, `numpy`, …)
 
-### Repo-aware parsing (manual for now)
+### Whole repo
 
-Pass `project_files` when you know all `.py` paths in the repo. Internal imports resolve to real files; everything else stays external:
+* `resolved_deps` — paths to other project files (e.g. `myapp/utils.py`)
+* `external_deps` — stdlib and third-party packages (`os`, `requests`, …)
 
-```python
-from pathlib import Path
-from app.parser.ast_parser import ASTParser
-from app.parser.repository import parse_repository
+Example for `tests/fixtures/mini_repo/myapp/auth.py`:
 
-root = Path("path/to/repo")
-project_files = {p.relative_to(root).as_posix() for p in root.rglob("*.py")}
-
-parser = ASTParser(project_files=project_files)
-content = (root / "myapp/auth.py").read_text()
-analysis = parser.parse_file("myapp/auth.py", content)
-
-print(analysis.resolved_deps)   # e.g. ['myapp/utils.py']
-print(analysis.external_deps)   # e.g. ['os', 'requests']
+```
+resolved_deps: myapp/models.py, myapp/utils.py
+external_deps: os, requests
 ```
 
-There is no `parse_repo` command yet — that comes with `IngestionService` + `GraphBuilder` in a later phase.
+### Python API
+
+```python
+from app.parser.repository import parse_repository
+
+analyses = parse_repository("tests/fixtures/mini_repo")
+print(analyses["myapp/auth.py"].resolved_deps)
+```
+
+For one file with manual control:
+
+```python
+from app.parser.ast_parser import ASTParser
+
+parser = ASTParser(project_files={"myapp/utils.py"})
+analysis = parser.parse_file("myapp/auth.py", content)
+```
 
 For design rationale and AST details, see [docs/learn.md](docs/learn.md).
 
@@ -172,12 +188,14 @@ npm run dev
 
 ### Phase 1 – AST Parser (in progress)
 
+* [x] Modular parser package (`models`, `ast_parser`, `dependencies`, `repository`, `cli`)
 * [x] `ASTParser` + `FileAnalysis` dataclasses
 * [x] Absolute, from, relative, and aliased imports
 * [x] Classes (name, bases, methods)
 * [x] Module-level functions vs class methods (separate lists)
-* [x] `resolved_deps` / `external_deps` when `project_files` is set
+* [x] `resolved_deps` / `external_deps` with suffix path matching
+* [x] `parse_repository()` — walk repo, parse all files
 * [x] CLI: `python -m app.parser.cli <file-or-repo>`
-* [x] Unit tests (`tests/test_parser.py`)
-* [ ] Repo ingestion + batch parsing
+* [x] Unit tests (`tests/test_parser.py`) + `tests/fixtures/mini_repo`
+* [ ] `IngestionService` (zip upload, filters)
 * [ ] `GraphBuilder`
