@@ -27,7 +27,7 @@ The phases are sequenced so that the hardest, most important work happens first 
 - [x] Create Python virtual environment, `requirements.txt` with initial dependencies
 - [x] Create FastAPI app with a single `GET /health` endpoint returning `{ "status": "ok" }`
 - [x] Create React app with Vite, verify it loads in browser
-- [ ] Write a `README.md` stub with setup instructions
+- [x] Write a `README.md` stub with setup instructions
 
 ### Deliverable
 
