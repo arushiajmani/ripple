@@ -9,13 +9,13 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 * **AST parser** — extract imports, classes, functions, and methods from a `.py` file
 * **Repo batch parsing** — walk a directory and parse all `.py` files via `parse_repository()`
 * **Dependency classification** — internal (`resolved_deps`) vs stdlib/third-party (`external_deps`) when project context is provided
+* **Graph builder** — assemble `dict[str, FileAnalysis]` into a `GraphResult` (nodes + directed import edges)
 * **CLI** — inspect single-file or whole-repo output from the terminal
 
 ### Planned
 
 * Zip upload ingestion (`IngestionService`)
-* File-level dependency graphs (NetworkX)
-* Cycle detection and criticality scores (PageRank, centrality)
+* Graph algorithms — PageRank, betweenness, cycle detection, criticality scores (`AlgorithmEngine`)
 * Impact analysis for proposed changes
 * Interactive graph visualization
 * REST API for repository analysis
@@ -50,20 +50,24 @@ ripple/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py              # FastAPI app (health check)
-│   │   └── parser/
-│   │       ├── models.py        # FileAnalysis, ImportInfo, …
-│   │       ├── ast_parser.py    # ASTParser (single-file parsing)
-│   │       ├── dependencies.py  # resolved vs external classification
-│   │       ├── repository.py    # walk repo, parse_repository()
-│   │       └── cli.py           # terminal output
+│   │   ├── parser/
+│   │   │   ├── models.py        # FileAnalysis, ImportInfo, …
+│   │   │   ├── ast_parser.py    # ASTParser (single-file parsing)
+│   │   │   ├── dependencies.py  # resolved vs external classification
+│   │   │   ├── repository.py    # walk repo, parse_repository()
+│   │   │   └── cli.py           # terminal output
+│   │   └── graph/
+│   │       ├── models.py        # GraphResult
+│   │       └── builder.py       # GraphBuilder
 │   └── tests/
 │       ├── sample_file.py       # single file to try the parser on
 │       ├── test_parser.py       # parser unit tests
+│       ├── test_graph.py        # graph builder unit tests
 │       └── fixtures/
 │           └── mini_repo/       # tiny repo for resolved vs external deps
 ├── frontend/
 ├── docs/
-│   ├── learn.md                 # code study guide (read this to understand the parser)
+│   ├── learn.md                 # code study guide (parser + graph builder)
 │   └── Roadmap.md
 └── docker-compose.yml
 ```
@@ -153,6 +157,23 @@ analysis = parser.parse_file("myapp/auth.py", content)
 
 For design rationale and AST details, see [docs/learn.md](docs/learn.md).
 
+### Graph builder
+
+Turn parsed files into a dependency graph:
+
+```python
+from app.graph import GraphBuilder
+from app.parser.repository import parse_repository
+
+analyses = parse_repository("tests/fixtures/mini_repo")
+result = GraphBuilder().build(analyses)
+
+print(result.nodes)   # sorted file paths
+print(result.edges)   # (importer, imported) pairs
+```
+
+Edges run **importer → imported** — e.g. `("myapp/auth.py", "myapp/models.py")` means `auth.py` imports `models.py`. External packages and out-of-repo paths are not graph nodes.
+
 ---
 
 ## Backend Development
@@ -163,6 +184,14 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload
+```
+
+### Tests
+
+From `backend/`:
+
+```bash
+PYTHONPATH=. pytest tests/ -v
 ```
 
 ---
@@ -186,7 +215,7 @@ npm run dev
 * [x] Backend container
 * [x] Frontend container
 
-### Phase 1 – AST Parser (in progress)
+### Phase 1 – Parser & Graph (in progress)
 
 * [x] Modular parser package (`models`, `ast_parser`, `dependencies`, `repository`, `cli`)
 * [x] `ASTParser` + `FileAnalysis` dataclasses
@@ -197,5 +226,7 @@ npm run dev
 * [x] `parse_repository()` — walk repo, parse all files
 * [x] CLI: `python -m app.parser.cli <file-or-repo>`
 * [x] Unit tests (`tests/test_parser.py`) + `tests/fixtures/mini_repo`
+* [x] `GraphBuilder` + `GraphResult` — nodes and directed import edges
+* [x] Graph unit tests (`tests/test_graph.py`, 9 cases)
+* [ ] `AlgorithmEngine` (PageRank, cycles, criticality)
 * [ ] `IngestionService` (zip upload, filters)
-* [ ] `GraphBuilder`

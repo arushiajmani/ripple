@@ -27,6 +27,19 @@
 | `IngestionService` (zip upload, filters) | No |
 | Test against 5 real open-source files | No |
 
+### Checklist (graph builder)
+
+| Task | Done? |
+|------|-------|
+| `GraphBuilder` in `backend/app/graph/builder.py` | Yes |
+| `GraphResult` dataclass (`nodes`, `edges`) | Yes |
+| Directed edges: importer → imported | Yes |
+| Filter deps to in-repo nodes only | Yes |
+| Deduplicate edges, deterministic sort | Yes |
+| Unit tests in `tests/test_graph.py` (9 cases) | Yes |
+| `AlgorithmEngine` (PageRank, cycles, scores) | No |
+| `nx.DiGraph` wrapper / conversion | No |
+
 ---
 
 ## Big picture
@@ -42,7 +55,7 @@ zip / repo  →  IngestionService (planned)  →  list of .py files
                       ASTParser (per file)  →  FileAnalysis
                             │
                             ▼
-                      GraphBuilder (planned)  →  nx.DiGraph
+                      GraphBuilder  →  GraphResult (nodes + edges)
                             │
                             ▼
                       AlgorithmEngine (planned)  →  PageRank, cycles, scores
@@ -51,7 +64,7 @@ zip / repo  →  IngestionService (planned)  →  list of .py files
                       PostgreSQL / JSON / API / React graph
 ```
 
-**Parser + repo batch parsing exist today.** Ingestion, graph, and algorithms are planned.
+**Parser, repo batch parsing, and graph construction exist today.** Ingestion and algorithms are planned.
 
 **Design choices worth remembering:**
 
@@ -140,7 +153,7 @@ We also removed a short-lived `modules` field — `imports` + `resolved_deps` + 
 | `repository.py` | `collect_python_files`, `parse_repository` |
 | `cli.py` | `print_analysis`, `main` — `python -m app.parser.cli` |
 
-`GraphBuilder` will reuse `dependencies.py` when it ships. `IngestionService` will eventually own file discovery; `repository.py` is the interim orchestrator.
+`GraphBuilder` consumes `resolved_deps` from the parser — it does not re-run import resolution. `IngestionService` will eventually own file discovery; `repository.py` is the interim orchestrator.
 
 ### 7. Suffix matching for internal imports
 
@@ -540,6 +553,158 @@ print(ast.dump(tree, indent=2))
 
 `ModuleNotFoundError: No module named 'app'` — you ran a script from `tests/` instead of using `-m` from `backend/`. Python puts the script's folder on `sys.path`, not `backend/`.
 
+**Running tests** (always from `backend/`):
+
+```bash
+cd backend
+source .venv/bin/activate
+PYTHONPATH=. pytest tests/ -v              # all tests
+PYTHONPATH=. pytest tests/test_graph.py -v   # graph builder only
+```
+
+If you `cd tests/` first, use `PYTHONPATH=.. pytest . -v` — not `pytest tests/`.
+
+---
+
+## Phase 1, Week 2 — Graph Builder
+
+**Goal:** Turn many `FileAnalysis` records into one dependency graph: nodes = files, edges = import relationships.
+
+**Files to read in order:**
+
+1. `backend/app/graph/models.py` — `GraphResult`
+2. `backend/app/graph/builder.py` — `GraphBuilder.build`
+3. `backend/tests/test_graph.py` — unit tests (synthetic `FileAnalysis` fixtures)
+
+```text
+backend/app/graph/
+├── models.py      # GraphResult
+├── builder.py     # GraphBuilder
+└── algorithms.py  # AlgorithmEngine (planned)
+```
+
+### 1. Output type (`GraphResult`)
+
+```python
+@dataclass
+class GraphResult:
+    nodes: list[str]                  # sorted file paths
+    edges: list[tuple[str, str]]      # (importer, imported)
+```
+
+This is the **structural** graph only — no scores yet. `AlgorithmEngine` will add PageRank, betweenness, and cycles on top.
+
+### 2. Input and API
+
+```python
+from app.graph import GraphBuilder
+from app.parser.repository import parse_repository
+
+analyses = parse_repository("tests/fixtures/mini_repo")
+result = GraphBuilder().build(analyses)
+
+# result.nodes → ["myapp/auth.py", "myapp/models.py", "myapp/utils.py", "myapp/__init__.py"]
+# result.edges → [
+#     ("myapp/auth.py", "myapp/models.py"),
+#     ("myapp/auth.py", "myapp/utils.py"),
+#     ("myapp/utils.py", "myapp/models.py"),
+# ]
+```
+
+| Input | Type | Notes |
+|-------|------|-------|
+| `analyses` | `dict[str, FileAnalysis]` | Keys are repo-relative paths — same shape as `parse_repository()` |
+
+`GraphBuilder` only reads `resolved_deps` from each `FileAnalysis`. It ignores `external_deps`, `imports`, classes, functions, and `has_syntax_error` — those are parser concerns.
+
+### 3. Edge direction (important for impact analysis later)
+
+```
+auth/session.py  →  utils/crypto.py
+```
+
+Means: **session.py imports crypto.py**. If `crypto.py` changes, **session.py** may break.
+
+Direction is `(source, target)` = `(importer, imported)`. Impact analysis later walks **backwards** along edges to find "who depends on this file?"
+
+### 4. What becomes a node vs an edge
+
+| Data | Becomes graph node? | Becomes edge? |
+|------|---------------------|---------------|
+| Key in `analyses` dict | Yes (always) | — |
+| Entry in `resolved_deps` where target is also in `analyses` | — | Yes |
+| Entry in `resolved_deps` where target is **not** in `analyses` | No | Skipped |
+| `external_deps` (`requests`, `os`, …) | No | No |
+
+The parser already separates internal vs external. The builder trusts `resolved_deps` and filters to in-repo targets only:
+
+```python
+for dep in analysis.resolved_deps:
+    if dep not in node_set:
+        continue
+    edge = (file_path, dep)
+```
+
+### 5. Design choices
+
+**Dict keys are the source of truth for node identity.** Nodes come from `sorted(analyses)` — the dict keys — not from `analysis.file_path`. Edge sources use the dict key during iteration. If a key and `file_path` ever diverge, the graph follows the key. `parse_repository()` keeps them aligned; don't hand-build mismatched dicts in production.
+
+**Deterministic output.** Nodes and edges are sorted so tests and diffs are stable across runs.
+
+**Duplicate deps deduplicated.** If the parser lists the same `resolved_deps` path twice (multiple imports of one module), only one edge is kept.
+
+**Cycles and self-loops are preserved, not rejected.** A→B→C→A or a file importing itself becomes an edge. Cycle *detection* is `AlgorithmEngine`'s job; the builder just records structure.
+
+**Syntax-error files still participate.** A file with `has_syntax_error=True` is still a node if it's in the dict. Any `resolved_deps` the parser extracted before failing still become edges.
+
+**No NetworkX yet.** `GraphResult` is plain lists. `AlgorithmEngine` can build an `nx.DiGraph` from nodes/edges when scoring — avoids storing the graph twice until needed.
+
+### 6. End-to-end flow (parser → graph)
+
+```
+parse_repository(repo_path)
+        │
+        ▼
+dict[str, FileAnalysis]     # each file has resolved_deps / external_deps
+        │
+        ▼
+GraphBuilder().build(analyses)
+        │
+        ▼
+GraphResult { nodes, edges }
+```
+
+### 7. How we test it
+
+Graph tests are **unit tests** — they pass hand-built `FileAnalysis` dicts directly to `GraphBuilder`, without calling `parse_repository()`. That isolates graph rules from parser rules.
+
+| Test | What it proves |
+|------|----------------|
+| Empty repository | `{}` → no nodes, no edges |
+| Single file, no deps | isolated file is a node with zero edges |
+| Simple dependency graph | fan-out + shared dependency, correct direction |
+| Missing / external deps ignored | out-of-repo `resolved_deps` and `external_deps` produce no edges |
+| Duplicate deps deduplicated | repeated `resolved_deps` → one edge |
+| Cyclic imports preserved | A→B→C→A kept intact |
+| Self-import | rare self-loop edge documented |
+| Dict key vs `file_path` | node identity follows dict key |
+| Syntax-error file | still a node; partial deps still become edges |
+
+**What we deliberately don't test in `test_graph.py`:** import resolution (that's `test_parser.py`), NetworkX algorithms, or hardcoded `mini_repo` edge lists. One integration smoke test via `parse_repository` is optional; the suite focuses on graph construction rules.
+
+### 8. Try it yourself
+
+```python
+from app.graph import GraphBuilder
+from app.parser.repository import parse_repository
+
+analyses = parse_repository("tests/fixtures/mini_repo")
+result = GraphBuilder().build(analyses)
+
+for source, target in result.edges:
+    print(f"{source} imports {target}")
+```
+
 ---
 
 ## Coming next (not implemented yet)
@@ -548,7 +713,6 @@ Read [Roadmap.md](./Roadmap.md) for full detail. Short preview:
 
 | Week | Component | What it will do |
 |------|-----------|-----------------|
-| 2 | `GraphBuilder` | Many `FileAnalysis` → one `nx.DiGraph` (nodes = files, edges = imports) |
 | 2 | `AlgorithmEngine` | PageRank, betweenness, cycle detection, criticality score |
 | 3 | `IngestionService` | Unzip repo, walk tree, filter `venv/` / `__pycache__`, set `project_files` |
 | 3 | `AnalysisPipeline` | Wire ingestion → parser → graph → algorithms → JSON |
@@ -561,7 +725,7 @@ Read [Roadmap.md](./Roadmap.md) for full detail. Short preview:
 |---------|----------|
 | `fastapi` + `uvicorn` | HTTP API |
 | `sqlalchemy` + `psycopg2` | Postgres ORM |
-| `networkx` | Graph algorithms (Week 2) |
+| `networkx` | Graph algorithms (`AlgorithmEngine`, planned) |
 | `pytest` + `httpx` | Tests |
 
 ---
