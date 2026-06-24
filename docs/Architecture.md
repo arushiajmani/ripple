@@ -11,6 +11,7 @@
 3. [Component Map](#3-component-map)
 4. [Technology Decisions](#4-technology-decisions)
 5. [Data Models](#5-data-models)
+5a. [Parser–Graph Design (Shipped)](#5a-parsergraph-design-shipped)
 6. [API Contract](#6-api-contract)
 7. [Key Design Patterns](#7-key-design-patterns)
 8. [Data Flow — Full Trace](#8-data-flow--full-trace)
@@ -100,7 +101,8 @@ ripple/
 │   └── tests/
 │       ├── test_parser.py
 │       ├── test_graph.py
-│       └── test_api.py
+│       ├── test_pipeline.py
+│       └── test_api.py          # stub
 │
 └── frontend/
     ├── Dockerfile
@@ -336,6 +338,53 @@ services:
     depends_on:
       - backend
 ```
+
+---
+
+## 5a. Parser–Graph Design (Shipped)
+
+> **Current code** differs from some fields below (e.g. `GraphResult` is nodes + edges only until `AlgorithmEngine` ships). See [learn.md](./learn.md) for the up-to-date study guide.
+
+### Architecture (V1)
+
+```
+Repository
+    ↓
+RepositoryParser          parse_repository() in repository.py
+    ↓
+dict[str, FileAnalysis]   canonical parsed record per file
+    ↓
+GraphBuilder              reads resolved_deps only (V1)
+    ↓
+GraphResult               nodes + edges
+```
+
+`AnalysisPipeline` wires RepositoryParser → GraphBuilder and returns `PipelineResult(analyses, graph)`.
+
+### Layer responsibilities
+
+| Layer | Components | Role |
+|-------|------------|------|
+| Parser | `ASTParser`, `FileAnalysis`, RepositoryParser | Single AST pass; emit all structured facts |
+| Graph | `GraphBuilder`, `GraphResult` | Build a graph *view* from parsed data |
+| Pipeline | `AnalysisPipeline` | Orchestrate without coupling parser to graph internals |
+
+### Design decisions
+
+1. **`FileAnalysis` is richer than V1 `GraphBuilder` needs** — one parse produces data for file, class, function, and library views later.
+2. **File import graphs only require `resolved_deps`** — edges are cross-file import relationships; internal structure and third-party packages are different graph types.
+3. **Unused fields are kept** — avoids reparsing and breaking CLI/tests when V2 builders arrive.
+4. **Future builders share the same `dict[str, FileAnalysis]`** — parse once, run `GraphBuilder`, `ClassGraphBuilder`, etc.
+
+### Future scope
+
+| Version | Capabilities |
+|---------|----------------|
+| **V1 (current)** | File-level graph; nodes = files; edges = imports |
+| **V2** | Class graph (inheritance, dependencies), function/call graphs, impact analysis, `external_deps` analytics, PageRank/cycles/criticality |
+| **V3** | AI-assisted explanations, architectural insights, change-risk estimation |
+
+Detail: [learn.md — Design Decisions](./learn.md#design-decisions) · [learn.md — Future Scope](./learn.md#future-scope)
 
 ---
 

@@ -23,7 +23,7 @@
 | Suffix path matching (`app.parser` → `backend/app/parser/…`) | Yes |
 | `FileAnalysis` dataclass | Yes |
 | CLI: `python -m app.parser.cli <file-or-repo>` | Yes |
-| Unit tests in `tests/test_parser.py` | Yes |
+| Unit tests in `tests/test_parser.py` | Yes (5 cases) |
 | `IngestionService` (zip upload, filters) | No |
 | Test against 5 real open-source files | No |
 
@@ -40,6 +40,16 @@
 | `AlgorithmEngine` (PageRank, cycles, scores) | No |
 | `nx.DiGraph` wrapper / conversion | No |
 
+### Checklist (pipeline)
+
+| Task | Done? |
+|------|-------|
+| `AnalysisPipeline` in `backend/app/pipeline/pipeline.py` | Yes |
+| Wire `parse_repository` → `GraphBuilder` | Yes |
+| `PipelineResult` (`analyses` + `graph`) | Yes |
+| CLI: `python -m app.pipeline <repo-path>` | Yes |
+| Unit tests in `tests/test_pipeline.py` | Yes (9 cases) |
+
 ---
 
 ## Big picture
@@ -47,40 +57,138 @@
 Ripple turns a Python repo into a **dependency graph** and scores each file for architectural importance.
 
 ```
-zip / repo  →  IngestionService (planned)  →  list of .py files
-                                                    │
-                    parse_repository() ◄────────────┘  (shipped today)
-                            │
-                            ▼
-                      ASTParser (per file)  →  FileAnalysis
-                            │
-                            ▼
-                      GraphBuilder  →  GraphResult (nodes + edges)
-                            │
-                            ▼
-                      AlgorithmEngine (planned)  →  PageRank, cycles, scores
-                            │
-                            ▼
-                      PostgreSQL / JSON / API / React graph
+Repository (directory)
+        │
+        ▼
+RepositoryParser          ←  parse_repository() in repository.py
+        │                   walks tree, calls ASTParser per file
+        ▼
+FileAnalysis (per file)   ←  canonical parsed representation
+        │
+        ▼
+GraphBuilder              ←  file-level import graph (V1)
+        │
+        ▼
+GraphResult               ←  nodes + edges today; scores later
+        │
+        ▼
+AlgorithmEngine (planned) →  PageRank, cycles, criticality
+        │
+        ▼
+PostgreSQL / JSON / API / React
 ```
 
-**Parser, repo batch parsing, and graph construction exist today.** Ingestion and algorithms are planned.
+**Shipped today:** Parser layer, `GraphBuilder`, `AnalysisPipeline` (parser → graph). Ingestion, algorithms, and API are planned.
 
-**Design choices worth remembering:**
+`FileAnalysis` is intended to remain the **canonical source of parsed code information** for all current and future graph builders. Parse once; build many graph views from the same `dict[str, FileAnalysis]`.
 
-- **Modular monolith** — one Python process, folders = components (`parser/`, `graph/`, `api/`).
-- **Compute vs storage** — NetworkX computes graphs in memory; Postgres stores results later.
-- **Parser is pure** — `parse_file(path, content)` takes a string; caller handles disk I/O.
-- **Structured imports internally, readable strings for display** — `ImportInfo` in the model; `.display` for CLI.
-- **No fake resolution** — `resolved_deps` only populated when `project_files` is set and a path actually exists in the project.
-- **Light module split** — `ast_parser.py` (walk tree), `dependencies.py` (resolve imports), `repository.py` (batch parse), `cli.py` (display). One concern per file.
+### Layer map
+
+| Layer | Components | Responsibility |
+|-------|------------|----------------|
+| **Parser** | `ASTParser`, `FileAnalysis`, RepositoryParser (`parse_repository`) | Read source, walk AST, resolve imports, emit structured facts per file |
+| **Graph** | `GraphBuilder`, `GraphResult` | Turn parsed files into a graph view (import graph in V1) |
+| **Pipeline** | `AnalysisPipeline`, `PipelineResult` | Orchestrate parse → build without coupling layers |
 
 ---
 
-## Design choices & things we rectified
+## Design Decisions
 
-These decisions came from iterating on the parser output and data model.
+Why the parser produces more data than the graph consumes today — and why that is intentional.
 
+### 1. Why `FileAnalysis` contains more than `GraphBuilder` uses
+
+`FileAnalysis` is the **parser's complete output contract**, not the graph's minimal input. A single AST walk can cheaply extract imports, classes, functions, methods, line counts, and syntax-error flags in one pass. Splitting that into separate dataclasses per future graph type would mean either **multiple AST walks** or **fragile partial models**.
+
+The graph layer therefore receives the full record and **selects the fields it needs**. V1's `GraphBuilder` reads only `resolved_deps`. V2 class and function builders will read `classes`, `functions`, `methods`, and `imports` without any parser changes.
+
+### 2. Why file-level dependency graphs only need `resolved_deps`
+
+A **file import graph** models one relationship: *file A imports file B*. That is fully determined by which other project files each module depends on — already normalized into `resolved_deps` by the parser (with `project_files` context).
+
+Fields like `classes` or `functions` describe **structure inside** a file, not **cross-file import edges**. `external_deps` names third-party packages that are deliberately **not** nodes in the file graph. `imports` is the raw structured form; `resolved_deps` is the graph-ready projection for internal files.
+
+Edge direction: `(importer, imported)` — if `crypto.py` changes, files that import it are downstream in impact analysis.
+
+### 3. Why unused fields are preserved, not removed
+
+Removing fields because V1 ignores them would:
+
+- Force a parser redesign when V2 ships
+- Break the CLI and tests that already expose classes, functions, and external deps
+- Couple graph evolution to parse-time concerns
+
+Unused fields are **latent capability**: zero cost at graph-build time, high value when adding class graphs, library analytics, or enriched node metadata (`line_count`, `has_syntax_error` for UI warnings).
+
+### 4. How this supports future graph types without reparsing
+
+```
+parse_repository(repo)  →  dict[str, FileAnalysis]   # once
+                                │
+            ┌───────────────────┼───────────────────┐
+            ▼                   ▼                   ▼
+     GraphBuilder      ClassGraphBuilder*    ExternalDepsIndex*
+     (resolved_deps)    (classes.bases)       (external_deps)
+            │                   │                   │
+            ▼                   ▼                   ▼
+     GraphResult         ClassGraphResult*     LibraryReport*
+```
+
+\*Planned — not implemented.
+
+Each builder is a **pure function** over the same `FileAnalysis` dict. Repository walk and AST parsing happen once per analysis job; new views are additive. This is the main reason `AnalysisPipeline` returns both `analyses` and `graph` in `PipelineResult`.
+
+---
+
+## Future Scope
+
+### V1 — Current
+
+| Aspect | Detail |
+|--------|--------|
+| Graph type | File-level dependency graph |
+| Nodes | Python file paths (`.py`) |
+| Edges | Import relationships from `resolved_deps` |
+| Components | `ASTParser`, RepositoryParser, `GraphBuilder`, `AnalysisPipeline` |
+| Out of scope for V1 graph | External packages as nodes, class/function edges, scores |
+
+### V2 — Richer structure graphs
+
+| Capability | Data source | Example |
+|------------|-------------|---------|
+| **Class-level graph** | `ClassInfo`, `ClassInfo.bases` | `Admin → User` (inheritance) |
+| **Class dependency analysis** | Type usage, constructors, cross-class references (TBD) | `Helper → User` |
+| **Function-level graph** | `functions`, `methods` | Module-level call relationships |
+| **Function call graph** | AST call-site extraction (new analysis pass or extended walk) | `login()` calls `hash_password()` |
+| **Impact analysis** | File graph + traversal | "What breaks if I change file X?" |
+| **Enriched file nodes** | `line_count`, class/function counts | Size and complexity in the UI |
+| **Library analytics** | `external_deps` per file | Most-used libraries; files depending on `requests` or `numpy` |
+| **Graph algorithms** | `GraphResult` → NetworkX | PageRank, betweenness, cycle detection, criticality scores |
+
+V2 adds **new builders** and **AlgorithmEngine** — not a new parser.
+
+### V3 — AI-assisted insights
+
+| Capability | Description |
+|------------|-------------|
+| **Repository explanations** | Natural-language summaries of architecture and module roles |
+| **Architectural insights** | Detect layering violations, god modules, coupling hotspots |
+| **Change-risk estimation** | Combine graph centrality, test coverage (if available), and history to score refactor risk |
+
+V3 consumes V1/V2 structured outputs; it does not replace the parser-graph pipeline.
+
+---
+
+## Design choices & things we rectified (parser iteration)
+
+These decisions came from iterating on the parser output and data model. For parser-vs-graph rationale and the V1–V3 roadmap, see [Design Decisions](#design-decisions) and [Future Scope](#future-scope) above.
+
+**Cross-cutting choices:**
+
+- **Modular monolith** — one Python process, folders = components (`parser/`, `graph/`, `pipeline/`, `api/`).
+- **Compute vs storage** — NetworkX computes graphs in memory; Postgres stores results later.
+- **Parser is pure** — `parse_file(path, content)` takes a string; caller handles disk I/O.
+- **Parse once, graph many** — `FileAnalysis` is canonical; future builders share the same `dict[str, FileAnalysis]`.
 ### 1. Structured imports (`ImportInfo`)
 
 **Before:** `imports: list[str]` like `"import numpy as np"`.
@@ -558,11 +666,29 @@ print(ast.dump(tree, indent=2))
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v              # all tests
-PYTHONPATH=. pytest tests/test_graph.py -v   # graph builder only
+PYTHONPATH=. pytest tests/ -v                    # all 23 tests
+PYTHONPATH=. pytest tests/test_parser.py -v      # parser only (5)
+PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder only (9)
+PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline only (9)
 ```
 
 If you `cd tests/` first, use `PYTHONPATH=.. pytest . -v` — not `pytest tests/`.
+
+See [Testing overview](#testing-overview) for what each suite covers.
+
+### 10. Tests (`test_parser.py`)
+
+Integration tests against `tests/fixtures/mini_repo` and the full ripple repo root. **5 tests** — coverage is via `parse_repository()`, not isolated `ASTParser` calls.
+
+| Test | What it proves |
+|------|----------------|
+| `test_collect_python_files_skips_cache_dirs` | `venv`, `__pycache__`, etc. are excluded from the file walk |
+| `test_parse_repository_returns_all_files` | Every collected `.py` file gets a `FileAnalysis`; keys match paths |
+| `test_parse_repository_resolves_internal_deps` | `auth.py` resolves `models.py` / `utils.py` internally; `os` / `requests` stay external |
+| `test_parse_repository_external_only_for_utils` | File with only third-party/stdlib imports has empty `resolved_deps` |
+| `test_module_resolution_matches_path_suffix` | `from app.parser.models` resolves to `backend/app/parser/models.py` when repo root is above `backend/` |
+
+**Fixture:** `tests/fixtures/mini_repo/` — tiny `myapp` package for internal vs external dependency checks.
 
 ---
 
@@ -676,21 +802,9 @@ GraphResult { nodes, edges }
 
 ### 7. How we test it
 
-Graph tests are **unit tests** — they pass hand-built `FileAnalysis` dicts directly to `GraphBuilder`, without calling `parse_repository()`. That isolates graph rules from parser rules.
+**9 unit tests** in `test_graph.py` — synthetic `FileAnalysis` dicts via `make_file()`, no filesystem, no parser. Full test list: [Testing overview — Graph builder tests](#graph-builder-tests-test_graphpy--full-list).
 
-| Test | What it proves |
-|------|----------------|
-| Empty repository | `{}` → no nodes, no edges |
-| Single file, no deps | isolated file is a node with zero edges |
-| Simple dependency graph | fan-out + shared dependency, correct direction |
-| Missing / external deps ignored | out-of-repo `resolved_deps` and `external_deps` produce no edges |
-| Duplicate deps deduplicated | repeated `resolved_deps` → one edge |
-| Cyclic imports preserved | A→B→C→A kept intact |
-| Self-import | rare self-loop edge documented |
-| Dict key vs `file_path` | node identity follows dict key |
-| Syntax-error file | still a node; partial deps still become edges |
-
-**What we deliberately don't test in `test_graph.py`:** import resolution (that's `test_parser.py`), NetworkX algorithms, or hardcoded `mini_repo` edge lists. One integration smoke test via `parse_repository` is optional; the suite focuses on graph construction rules.
+Deliberately **not** tested here: import resolution (`test_parser.py`), end-to-end pipeline (`test_pipeline.py`), NetworkX algorithms.
 
 ### 8. Try it yourself
 
@@ -707,15 +821,101 @@ for source, target in result.edges:
 
 ---
 
+## Phase 1 — Analysis Pipeline
+
+**Goal:** Connect parser and graph in one call — parse once, build graph, return both.
+
+```python
+from app.pipeline import AnalysisPipeline
+
+result = AnalysisPipeline().run("tests/fixtures/mini_repo")
+result.analyses   # dict[str, FileAnalysis]
+result.graph      # GraphResult
+```
+
+CLI: `python -m app.pipeline <repo-path>` (directory only today).
+
+### Tests (`test_pipeline.py`)
+
+**9 tests** — mostly temp repos on disk (real parse → graph); one case uses pytest `monkeypatch` to stub `parse_repository`.
+
+| Test | Style | What it proves |
+|------|-------|----------------|
+| `test_empty_graph` | temp repo | Empty directory → no analyses, empty graph |
+| `test_single_node` | temp repo | One `.py` file → one node, zero edges |
+| `test_simple_dependency_graph` | temp repo | Multi-file imports → correct edges end-to-end |
+| `test_dedup_edges` | temp repo | Duplicate imports of same module → one edge |
+| `test_ignore_missing_deps` | monkeypatch | `resolved_deps` pointing outside repo → no edges |
+| `test_deterministic_ordering` | temp repo | Two runs return identical sorted nodes/edges |
+| `test_small_cycle` | temp repo | `a → b → c → a` cycle preserved through pipeline |
+| `test_run_parses_mini_repo_integration` | fixture | `mini_repo` parse + graph matches `expected_edges()` |
+| `test_run_raises_for_non_directory` | error path | File path (not dir) → `NotADirectoryError` |
+
+**Helpers:** `write_repo()` builds temp Python trees; `expected_edges()` derives edges from `analyses` for assertions.
+
+**Monkeypatch note:** `test_ignore_missing_deps` temporarily replaces `parse_repository` with a lambda returning hand-built `FileAnalysis` dicts — the real parser cannot produce a `resolved_deps` entry for a file absent from the repo.
+
+---
+
+## Testing overview
+
+**23 tests** across three suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+
+### Strategy by layer
+
+| Suite | File | Tests | Style | What it isolates |
+|-------|------|-------|-------|------------------|
+| Parser | `test_parser.py` | 5 | Integration | File walk, `parse_repository`, import resolution |
+| Graph | `test_graph.py` | 9 | Unit | `GraphBuilder` rules via synthetic `FileAnalysis` dicts |
+| Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline` wiring; temp repos + one monkeypatch |
+
+```
+test_parser.py     →  parse_repository  →  FileAnalysis
+test_graph.py      →  GraphBuilder      →  GraphResult     (no parser)
+test_pipeline.py   →  AnalysisPipeline  →  PipelineResult  (parse + graph)
+```
+
+Parser tests do **not** call `GraphBuilder`. Graph tests do **not** call `parse_repository`. Pipeline tests exercise the full path except where monkeypatch injects controlled parse output.
+
+### Graph builder tests (`test_graph.py`) — full list
+
+| Test | What it proves |
+|------|----------------|
+| `test_empty_repository` | `{}` → no nodes, no edges |
+| `test_single_file_no_dependencies` | Isolated file is a node with zero edges |
+| `test_simple_dependency_graph` | Fan-out + shared dependency; correct edge direction |
+| `test_missing_and_external_dependencies_ignored` | Out-of-repo `resolved_deps` and `external_deps` → no edges |
+| `test_duplicate_resolved_deps_deduplicated` | Repeated `resolved_deps` → one edge |
+| `test_cyclic_imports_preserved` | A→B→C→A kept intact |
+| `test_self_import_creates_self_loop` | Self-loop edge when file imports itself |
+| `test_dict_key_used_as_node_not_file_path_field` | Node identity follows dict key, not `file_path` field |
+| `test_syntax_error_file_still_contributes_nodes_and_edges` | `has_syntax_error=True` still produces nodes/edges |
+
+Uses `make_file()` helper for realistic `FileAnalysis` fixtures without touching the filesystem.
+
+### Not covered yet
+
+| Area | Notes |
+|------|-------|
+| `ASTParser.parse_file` in isolation | Exercised indirectly via `parse_repository` |
+| Single-file pipeline input | CLI accepts dirs only |
+| `AlgorithmEngine` / NetworkX | Planned |
+| API / `test_api.py` | Stub only |
+| Syntax-error files in pipeline | Covered in graph unit tests only |
+
+---
+
 ## Coming next (not implemented yet)
 
-Read [Roadmap.md](./Roadmap.md) for full detail. Short preview:
+Read [Roadmap.md](./Roadmap.md) for week-by-week tasks. Short preview:
 
-| Week | Component | What it will do |
-|------|-----------|-----------------|
-| 2 | `AlgorithmEngine` | PageRank, betweenness, cycle detection, criticality score |
-| 3 | `IngestionService` | Unzip repo, walk tree, filter `venv/` / `__pycache__`, set `project_files` |
-| 3 | `AnalysisPipeline` | Wire ingestion → parser → graph → algorithms → JSON |
+| Component | What it will do |
+|-----------|-----------------|
+| `AlgorithmEngine` | PageRank, betweenness, cycle detection, criticality score |
+| `IngestionService` | Unzip repo, walk tree, filter `venv/` / `__pycache__` |
+| REST API + Postgres | Persist results, async jobs, graph/impact endpoints |
+
+`AnalysisPipeline` (parser → graph) is **shipped**. See [Future Scope](#future-scope) for V2/V3 capabilities.
 
 ---
 

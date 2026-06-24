@@ -10,15 +10,48 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 * **Repo batch parsing** — walk a directory and parse all `.py` files via `parse_repository()`
 * **Dependency classification** — internal (`resolved_deps`) vs stdlib/third-party (`external_deps`) when project context is provided
 * **Graph builder** — assemble `dict[str, FileAnalysis]` into a `GraphResult` (nodes + directed import edges)
-* **CLI** — inspect single-file or whole-repo output from the terminal
+* **Analysis pipeline** — `AnalysisPipeline` wires `parse_repository()` → `GraphBuilder` in one step
+* **CLI** — parser: `python -m app.parser.cli`; pipeline: `python -m app.pipeline`
 
-### Planned
+### Planned (near term)
 
 * Zip upload ingestion (`IngestionService`)
 * Graph algorithms — PageRank, betweenness, cycle detection, criticality scores (`AlgorithmEngine`)
 * Impact analysis for proposed changes
 * Interactive graph visualization
 * REST API for repository analysis
+
+### Future scope — V1 / V2 / V3
+
+| Version | Focus |
+|---------|--------|
+| **V1 (current)** | File-level import graph — nodes = files, edges = `resolved_deps` |
+| **V2** | Class graph (inheritance + dependencies), function/call graphs, impact analysis, library analytics (`external_deps`), graph algorithms |
+| **V3** | AI-assisted repository explanations, architectural insights, change-risk estimation |
+
+See [docs/learn.md](docs/learn.md#design-decisions) for design rationale and [docs/learn.md](docs/learn.md#future-scope) for detail.
+
+## Architecture
+
+```
+Repository
+    ↓
+RepositoryParser          parse_repository() — batch walk + ASTParser per file
+    ↓
+FileAnalysis              canonical parsed record (per file)
+    ↓
+GraphBuilder              V1: file import graph from resolved_deps only
+    ↓
+GraphResult
+```
+
+**Parser layer:** `ASTParser`, `FileAnalysis`, RepositoryParser (`parse_repository` in `repository.py`)
+
+**Graph layer:** `GraphBuilder`, `GraphResult`
+
+**Pipeline:** `AnalysisPipeline` orchestrates parse → build. `GraphBuilder` currently reads only `resolved_deps`; other `FileAnalysis` fields (`classes`, `functions`, `imports`, `external_deps`, `line_count`, `has_syntax_error`) are preserved for V2 graph builders without reparsing.
+
+Full rationale: [Design Decisions](docs/learn.md#design-decisions) · Roadmap: [Future Scope](docs/learn.md#future-scope) · Study guide: [docs/learn.md](docs/learn.md)
 
 ## Tech Stack
 
@@ -56,18 +89,24 @@ ripple/
 │   │   │   ├── dependencies.py  # resolved vs external classification
 │   │   │   ├── repository.py    # walk repo, parse_repository()
 │   │   │   └── cli.py           # terminal output
-│   │   └── graph/
-│   │       ├── models.py        # GraphResult
-│   │       └── builder.py       # GraphBuilder
+│   │   ├── graph/
+│   │   │   ├── models.py        # GraphResult
+│   │   │   └── builder.py       # GraphBuilder
+│   │   └── pipeline/
+│   │       ├── pipeline.py      # AnalysisPipeline
+│   │       └── __main__.py      # python -m app.pipeline
 │   └── tests/
 │       ├── sample_file.py       # single file to try the parser on
-│       ├── test_parser.py       # parser unit tests
-│       ├── test_graph.py        # graph builder unit tests
+│       ├── test_parser.py       # parser tests (5)
+│       ├── test_graph.py        # graph builder tests (9)
+│       ├── test_pipeline.py     # pipeline tests (9)
+│       ├── test_api.py            # API tests (stub)
 │       └── fixtures/
-│           └── mini_repo/       # tiny repo for resolved vs external deps
+│           └── mini_repo/       # shared fixture for parser + pipeline
 ├── frontend/
 ├── docs/
-│   ├── learn.md                 # code study guide (parser + graph builder)
+│   ├── learn.md                 # architecture, design decisions, study guide
+│   ├── Architecture.md          # full system architecture document
 │   └── Roadmap.md
 └── docker-compose.yml
 ```
@@ -174,6 +213,22 @@ print(result.edges)   # (importer, imported) pairs
 
 Edges run **importer → imported** — e.g. `("myapp/auth.py", "myapp/models.py")` means `auth.py` imports `models.py`. External packages and out-of-repo paths are not graph nodes.
 
+### Pipeline
+
+Run parse + graph in one step:
+
+```bash
+python -m app.pipeline tests/fixtures/mini_repo
+```
+
+```python
+from app.pipeline import AnalysisPipeline
+
+result = AnalysisPipeline().run("tests/fixtures/mini_repo")
+result.analyses   # dict[str, FileAnalysis]
+result.graph      # GraphResult
+```
+
 ---
 
 ## Backend Development
@@ -188,11 +243,24 @@ uvicorn app.main:app --reload
 
 ### Tests
 
-From `backend/`:
+From `backend/` (requires `PYTHONPATH=.` so Python finds the `app` package):
 
 ```bash
-PYTHONPATH=. pytest tests/ -v
+PYTHONPATH=. pytest tests/ -v                    # all 23 tests
+PYTHONPATH=. pytest tests/test_parser.py -v      # parser (5)
+PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder (9)
+PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
 ```
+
+| Suite | Tests | Covers |
+|-------|-------|--------|
+| **`test_parser.py`** | 5 | File walk skips cache dirs; `parse_repository` completeness; internal vs external deps on `mini_repo`; suffix path matching |
+| **`test_graph.py`** | 9 | Empty/single-node graphs; dependency edges; dedup; missing deps; cycles; self-loops; dict-key semantics; syntax-error files |
+| **`test_pipeline.py`** | 9 | End-to-end parse → graph on temp repos; dedup; deterministic ordering; cycles; `mini_repo` integration; non-directory error; missing deps via monkeypatch |
+
+**Fixture:** `tests/fixtures/mini_repo/` — shared by parser and pipeline integration tests.
+
+Detail: [docs/learn.md — Testing overview](docs/learn.md#testing-overview)
 
 ---
 
@@ -225,8 +293,10 @@ npm run dev
 * [x] `resolved_deps` / `external_deps` with suffix path matching
 * [x] `parse_repository()` — walk repo, parse all files
 * [x] CLI: `python -m app.parser.cli <file-or-repo>`
-* [x] Unit tests (`tests/test_parser.py`) + `tests/fixtures/mini_repo`
+* [x] Unit tests (`tests/test_parser.py`, 5 cases) + `tests/fixtures/mini_repo`
 * [x] `GraphBuilder` + `GraphResult` — nodes and directed import edges
 * [x] Graph unit tests (`tests/test_graph.py`, 9 cases)
+* [x] `AnalysisPipeline` — parser → graph orchestration
+* [x] Pipeline tests (`tests/test_pipeline.py`, 9 cases)
 * [ ] `AlgorithmEngine` (PageRank, cycles, criticality)
 * [ ] `IngestionService` (zip upload, filters)
