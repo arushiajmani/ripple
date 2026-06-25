@@ -123,6 +123,8 @@ Run analysis on a Python project with 20+ files. Top-ranked files intuitively ma
 - [ ] Walk directory tree, collect all `.py` files
 - [ ] Filter out virtual environments (`venv/`, `.venv/`, `env/`), build artifacts (`__pycache__/`, `*.pyc`), test files (optional — include for now, filter later)
 - [ ] Wire `IngestionService` → `ASTParser` → `GraphBuilder` → `AlgorithmEngine` into a single `AnalysisPipeline` class
+- [ ] Instrument every pipeline stage with timing: `file_discovery`, `ast_parsing` (total + per-file average), `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization` — timings held on `PipelineResult`
+- [ ] Add benchmark CLI: `python -m app.benchmark --repo path/to/project` — runs the pipeline and prints a formatted timing breakdown to stdout (for performance testing on large repos)
 - [ ] Output complete result as a JSON file
 - [ ] Clean up temp directory after analysis
 - [ ] Test end-to-end on 3 different real Python projects of varying sizes
@@ -132,6 +134,9 @@ Run analysis on a Python project with 20+ files. Top-ranked files intuitively ma
 ```bash
 python -m backend.app.pipeline path/to/project.zip
 # Produces: result.json with nodes, edges, scores, cycles
+
+python -m app.benchmark --repo path/to/project
+# Prints per-stage timing breakdown to stdout
 ```
 
 The JSON output is correct, complete, and makes intuitive sense for a project you understand.
@@ -178,7 +183,7 @@ Unresolvable imports (third-party packages like `import requests`) should be tra
 - [ ] Set up Alembic for database migrations
 - [ ] Implement all tables from the schema in the SRS (repositories, files, dependencies, node_scores, cycles)
 - [ ] Implement `POST /api/analyze` — accepts zip file upload, creates job record, triggers background analysis
-- [ ] Implement `GET /api/status/{repo_id}` — returns current job status
+- [ ] Implement `GET /api/status/{repo_id}` — returns current job status; includes `metrics` array (stage durations) once analysis is complete
 - [ ] Implement background task that runs `AnalysisPipeline` and writes results to PostgreSQL
 - [ ] Implement idempotency — same zip uploaded twice returns existing result (hash the file content)
 - [ ] Handle failures gracefully — if analysis crashes, set status to `"failed"` with error message
@@ -331,6 +336,7 @@ A person who has never seen the project can clone the repo, run `docker-compose 
 | Cytoscape rendering slow on large graphs (500+ nodes) | Medium     | Medium | Add node filtering by criticality threshold, only render top N nodes           |
 | PostgreSQL migration issues slow Phase 2              | Low        | Medium | Keep schema simple, use Alembic from day one                                   |
 | Scope creep back into v2/v3 features                  | High       | Medium | Refer back to this document, defer all non-MVP features explicitly             |
+| Large repo performance in benchmark CLI               | Medium     | High   | Use `app.benchmark` to profile per-stage timings; parallelize `ast_parsing` before optimizing algorithms |
 
 
 ---
@@ -346,4 +352,4 @@ Ask yourself these at the end of every week:
 
 ---
 
-*Roadmap version: 1.0 | Project: Ripple | Last updated: project start*
+*Roadmap version: 1.1 | Project: Ripple | Last updated: June 2026*

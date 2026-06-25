@@ -286,6 +286,14 @@ criticality_score = 0.6 * normalized_pagerank + 0.4 * normalized_betweenness
 
 The weighting (0.6/0.4) is a deliberate design choice you can explain: PageRank captures "how many things depend on this?" while betweenness captures "does everything route through this?" Both matter, but structural importance (PageRank) is weighted slightly higher for this use case.
 
+**Pipeline instrumentation:**
+
+Every `AnalysisPipeline` stage is timed and recorded:
+
+`file_discovery` → `ast_parsing` (total + per-file average) → `import_resolution` → `graph_construction` → `pagerank_computation` → `betweenness_computation` → `score_normalization`
+
+Timings are exposed via `GET /api/status/{repo_id}` (`metrics` array when complete) and via `python -m app.benchmark --repo path/to/project` for local performance testing.
+
 ---
 
 ### Component 3: FastAPI Backend (API Layer)
@@ -356,6 +364,7 @@ This section traces exactly what happens from the moment a user pastes a URL to 
    - compute Betweenness Centrality
    - detect cycles
    - compute composite criticality scores
+   - record per-stage timings (file_discovery through score_normalization)
    - store scores in PostgreSQL (node_scores table)
         │
         ▼
@@ -392,7 +401,7 @@ Step 5–8 (clone + parse + analyze) can take 30–120 seconds for a large repo.
 1. Immediately return `{ repo_id, status: "processing" }` from the POST endpoint
 2. Run the analysis in a background task (FastAPI's `BackgroundTasks`)
 3. Have the frontend poll `GET /api/status/{repo_id}` every 2 seconds
-4. When status becomes `"complete"`, fetch the graph
+4. When status becomes `"complete"`, fetch the graph (status response includes `metrics` array with per-stage durations)
 
 This is the **async job pattern** used by every real system that processes long-running tasks (video encoding, ML training, report generation).
 
@@ -492,8 +501,10 @@ POST   /api/analyze
        Purpose:  Trigger analysis job
 
 GET    /api/status/{repo_id}
-       Response: { "repo_id": "uuid", "status": "processing|complete|failed" }
-       Purpose:  Poll for job completion
+       Response: { "repo_id": "uuid", "status": "processing|complete|failed",
+                   "metrics": [ { "stage_name": "ast_parsing", "duration_ms": 8400,
+                                  "files_processed": 247 }, ... ] }
+       Purpose:  Poll for job completion; metrics[] present when complete
 
 GET    /api/graph/{repo_id}
        Response: {
@@ -529,6 +540,11 @@ GET    /api/impact/{repo_id}?file=auth/session.py
 GET    /api/repos
        Response: [ list of previously analyzed repos ]
        Purpose:  Show analysis history on homepage
+```
+
+**Benchmark CLI (no HTTP):**
+```bash
+python -m app.benchmark --repo path/to/project
 ```
 
 ---
@@ -596,8 +612,10 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 | FR-10 | Sidebar shows top 10 critical files ranked | Must Have |
 | FR-11 | Previously analyzed repos are cached | Should Have |
 | FR-12 | Circular dependencies are visually highlighted | Should Have |
-| FR-13 | User can search/filter nodes by file name | Nice to Have |
-| FR-14 | User can export graph as PNG or JSON | Nice to Have |
+| FR-13 | Pipeline stage metrics exposed via status API when analysis completes | Must Have |
+| FR-14 | Benchmark CLI prints formatted per-stage timing breakdown | Should Have |
+| FR-15 | User can search/filter nodes by file name | Nice to Have |
+| FR-16 | User can export graph as PNG or JSON | Nice to Have |
 
 ---
 
@@ -610,6 +628,7 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 | Usability | Interactive graph loads and is usable within 3 seconds of analysis completing |
 | Reliability | Failed analysis jobs surface a clear error message to the user |
 | Portability | Entire system runs locally with a single `docker-compose up` command |
+| Observability | Per-stage pipeline metrics recorded; benchmark CLI available for performance testing |
 | Code Quality | Each component (parser, graph engine, API) has unit tests with >70% coverage |
 
 ---
@@ -636,7 +655,8 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 
 **Week 3: Ingestion + Integration**
 - Implement `IngestionService` — clone a GitHub repo to temp directory
-- Wire all components together end to end
+- Wire all components together end to end with pipeline stage instrumentation
+- Add benchmark CLI: `python -m app.benchmark --repo path/to/project`
 - Output results as JSON file
 - Test against 3 different real Python repos
 - Milestone: `python ripple.py https://github.com/owner/repo` produces a valid `result.json`
@@ -652,8 +672,8 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 - Set up FastAPI project, Docker Compose (FastAPI + PostgreSQL)
 - Implement PostgreSQL schema (migrations via Alembic)
 - Implement `POST /api/analyze` — accepts URL, starts background job, returns repo_id
-- Implement `GET /api/status/{repo_id}` — returns job status
-- Milestone: Can submit a URL via curl and poll for completion
+- Implement `GET /api/status/{repo_id}` — returns job status and `metrics[]` when complete
+- Milestone: Can submit a URL via curl and poll for completion with stage timings
 
 **Week 5: Graph + Impact Endpoints**
 - Implement `GET /api/graph/{repo_id}` — returns full graph JSON
@@ -738,4 +758,4 @@ These are the questions you should be able to answer confidently after building 
 
 ---
 
-*Document version: 1.0 | Project: Ripple | Stack: Python · FastAPI · PostgreSQL · NetworkX · React · Cytoscape.js · Docker*
+*Document version: 1.1 | Project: Ripple | Stack: Python · FastAPI · PostgreSQL · NetworkX · React · Cytoscape.js · Docker*

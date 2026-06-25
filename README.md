@@ -17,6 +17,7 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 
 * Zip upload ingestion (`IngestionService`)
 * Graph algorithms — PageRank, betweenness, cycle detection, criticality scores (`AlgorithmEngine`)
+* Pipeline stage metrics and benchmark CLI (`python -m app.benchmark --repo path/to/project`)
 * Impact analysis for proposed changes
 * Interactive graph visualization
 * REST API for repository analysis

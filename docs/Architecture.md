@@ -88,6 +88,7 @@ ripple/
 │   │   ├── pipeline/           # Component 4: Orchestration
 │   │   │   ├── __init__.py
 │   │   │   └── pipeline.py     # AnalysisPipeline (wires 1+2+3)
+│   │   ├── benchmark.py        # CLI: python -m app.benchmark --repo <path>
 │   │   │
 │   │   ├── api/                # Component 5: HTTP layer
 │   │   │   ├── __init__.py
@@ -501,18 +502,42 @@ Response 400 Bad Request:
 ```
 
 ### GET /api/status/{repo_id}
-Returns current job status.
+Returns current job status. Once analysis is complete, includes per-stage timing metrics.
 
 ```
-Response 200:
+Response 200 (processing or failed):
 {
   "repo_id": "uuid",
   "status": "pending | processing | complete | failed",
   "error": "string | null"
 }
 
+Response 200 (complete):
+{
+  "repo_id": "uuid",
+  "status": "complete",
+  "error": null,
+  "metrics": [
+    { "stage_name": "file_discovery", "duration_ms": 45, "files_processed": null },
+    { "stage_name": "ast_parsing", "duration_ms": 8400, "files_processed": 247 },
+    { "stage_name": "import_resolution", "duration_ms": 2100, "files_processed": 247 },
+    { "stage_name": "graph_construction", "duration_ms": 120, "files_processed": 247 },
+    { "stage_name": "pagerank_computation", "duration_ms": 890, "files_processed": null },
+    { "stage_name": "betweenness_computation", "duration_ms": 3200, "files_processed": null },
+    { "stage_name": "score_normalization", "duration_ms": 15, "files_processed": null }
+  ]
+}
+
 Response 404: repo_id not found
 ```
+
+**Instrumented stages:** `file_discovery`, `ast_parsing`, `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization`
+
+**Benchmark CLI (no HTTP):**
+```bash
+python -m app.benchmark --repo path/to/project
+```
+Runs the full pipeline locally and prints the same stage breakdown to stdout. Used for performance testing on large repos without starting the API server.
 
 ### GET /api/graph/{repo_id}
 Returns complete graph data for visualization.
@@ -601,7 +626,7 @@ Client                          Server
   ├── GET /status/{id} ──────────►│
   │◄── { status: "processing" } ──┤
   ├── GET /status/{id} ──────────►│  (poll every 2 seconds)
-  │◄── { status: "complete" } ────┤
+  │◄── { status: "complete", metrics: [...] } ──┤
   ├── GET /graph/{id} ───────────►│
   │◄── { nodes, edges, scores } ──┤
 ```
@@ -743,6 +768,7 @@ Complete trace from zip upload to graph appearing on screen.
     - Normalize both score sets to [0, 1]
     - criticality = 0.6 * norm_pagerank + 0.4 * norm_betweenness
     - cycles = list(nx.simple_cycles(G))
+    - Each stage records duration (file_discovery through score_normalization)
          │
          ▼
 10. Write results to PostgreSQL:
@@ -753,7 +779,7 @@ Complete trace from zip upload to graph appearing on screen.
     - Clean up /tmp/ripple/{repo_id}/
          │
          ▼
-11. Frontend polling detects status='complete'
+11. Frontend polling detects status='complete' (metrics[] available in response)
          │
          ▼
 12. Frontend: GET /api/graph/{repo_id}
@@ -865,6 +891,8 @@ You likely won't need to scale this project. But knowing how you *would* scale i
 
 **Concurrent analyses:** FastAPI's BackgroundTasks runs in the same process. Many simultaneous analysis jobs would compete for CPU.
 
+**Benchmarking:** `python -m app.benchmark --repo path/to/project` runs the full pipeline and prints per-stage timing to stdout. Use this to profile large repos before optimizing; watch for `ast_parsing` dominating wall time on 1000+ file codebases.
+
 ### How You Would Scale
 
 **Problem: slow analysis**
@@ -880,4 +908,4 @@ Solution: Add a proper job queue (Celery + Redis). Instead of running analysis i
 
 ---
 
-*Architecture version: 1.0 | Project: Ripple | Stack: Python · FastAPI · PostgreSQL · NetworkX · React · Cytoscape.js · Docker*
+*Architecture version: 1.1 | Project: Ripple | Stack: Python · FastAPI · PostgreSQL · NetworkX · React · Cytoscape.js · Docker*
