@@ -10,6 +10,7 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 * **Repo batch parsing** — walk a directory and parse all `.py` files via `parse_repository()`
 * **Dependency classification** — internal (`resolved_deps`) vs stdlib/third-party (`external_deps`) when project context is provided
 * **Graph builder** — assemble `dict[str, FileAnalysis]` into a `GraphResult` (nodes + directed import edges)
+* **Cycle detection** — `CycleDetector` finds circular dependencies via NetworkX (`graph/algorithms/cycles.py`)
 * **Analysis pipeline** — `AnalysisPipeline` wires `parse_repository()` → `GraphBuilder` in one step
 * **CLI** — parser: `python -m app.parser.cli`; pipeline: `python -m app.pipeline`
 
@@ -98,10 +99,12 @@ ripple/
 │   │       └── __main__.py      # python -m app.pipeline
 │   └── tests/
 │       ├── sample_file.py       # single file to try the parser on
-│       ├── test_parser.py       # parser tests (5)
+│       ├── test_parser.py       # parser tests (11)
 │       ├── test_graph.py        # graph builder tests (9)
 │       ├── test_pipeline.py     # pipeline tests (9)
-│       ├── test_api.py            # API tests (stub)
+│       ├── test_api.py          # API tests (stub)
+│       ├── algorithms/
+│       │   └── test_cycles.py   # cycle detection (8)
 │       └── fixtures/
 │           └── mini_repo/       # shared fixture for parser + pipeline
 ├── frontend/
@@ -247,21 +250,27 @@ uvicorn app.main:app --reload
 From `backend/` (requires `PYTHONPATH=.` so Python finds the `app` package):
 
 ```bash
-PYTHONPATH=. pytest tests/ -v                    # all 23 tests
-PYTHONPATH=. pytest tests/test_parser.py -v      # parser (5)
+cd backend
+source .venv/bin/activate
+PYTHONPATH=. pytest tests/ -v                    # all 37 tests (-v = verbose, one line per test)
+PYTHONPATH=. pytest tests/test_parser.py -v      # parser (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
+PYTHONPATH=. pytest tests/algorithms/ -v         # cycle detection (8)
 ```
+
+**First time with pytest?** [docs/learn.md — Introduction to pytest](docs/learn.md#introduction-to-pytest) explains what pytest is, `-v` / `-q` output, running a single test, useful flags (`-x`, `-k`, `--tb`), fixtures, and common mistakes.
 
 | Suite | Tests | Covers |
 |-------|-------|--------|
-| **`test_parser.py`** | 5 | File walk skips cache dirs; `parse_repository` completeness; internal vs external deps on `mini_repo`; suffix path matching |
+| **`test_parser.py`** | 11 | Import forms (parametrized), `__future__` / syntax edge cases, `mini_repo` integration |
 | **`test_graph.py`** | 9 | Empty/single-node graphs; dependency edges; dedup; missing deps; cycles; self-loops; dict-key semantics; syntax-error files |
 | **`test_pipeline.py`** | 9 | End-to-end parse → graph on temp repos; dedup; deterministic ordering; cycles; `mini_repo` integration; non-directory error; missing deps via monkeypatch |
+| **`test_cycles.py`** | 8 | `CycleDetector`: empty/acyclic graphs, simple cycles, self-loops, disjoint cycles, normalization |
 
 **Fixture:** `tests/fixtures/mini_repo/` — shared by parser and pipeline integration tests.
 
-Detail: [docs/learn.md — Testing overview](docs/learn.md#testing-overview)
+**More detail:** [docs/learn.md — Testing overview](docs/learn.md#testing-overview) (full catalog per test). **Roadmap milestones:** [docs/Roadmap.md](docs/Roadmap.md). **Requirements traceability:** [docs/SRS_ProjectPlan.md](docs/SRS_ProjectPlan.md#10-functional-requirements).
 
 ---
 
@@ -294,10 +303,13 @@ npm run dev
 * [x] `resolved_deps` / `external_deps` with suffix path matching
 * [x] `parse_repository()` — walk repo, parse all files
 * [x] CLI: `python -m app.parser.cli <file-or-repo>`
-* [x] Unit tests (`tests/test_parser.py`, 5 cases) + `tests/fixtures/mini_repo`
+* [x] Unit tests (`tests/test_parser.py`, 11 cases) + `tests/fixtures/mini_repo`
+* [x] `CycleDetector` + tests (`tests/algorithms/test_cycles.py`, 8 cases)
 * [x] `GraphBuilder` + `GraphResult` — nodes and directed import edges
 * [x] Graph unit tests (`tests/test_graph.py`, 9 cases)
 * [x] `AnalysisPipeline` — parser → graph orchestration
 * [x] Pipeline tests (`tests/test_pipeline.py`, 9 cases)
-* [ ] `AlgorithmEngine` (PageRank, cycles, criticality)
+* [ ] Wire `CycleDetector` into `AnalysisPipeline`
+* [ ] PageRank, betweenness, and composite criticality scoring
 * [ ] `IngestionService` (zip upload, filters)
+* [ ] Pipeline stage metrics and benchmark CLI

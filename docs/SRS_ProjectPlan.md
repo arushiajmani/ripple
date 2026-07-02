@@ -631,6 +631,24 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 | Observability | Per-stage pipeline metrics recorded; benchmark CLI available for performance testing |
 | Code Quality | Each component (parser, graph engine, API) has unit tests with >70% coverage |
 
+### Verification (how to test requirements)
+
+Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**37 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests).
+
+| Requirement | Status | Verified by |
+|-------------|--------|-------------|
+| FR-02 Index `.py` files | Partial | `test_collect_python_files_skips_cache_dirs`, `test_parse_repository_mini_repo` |
+| FR-03 Parse imports + dependency graph | Partial | `test_parser.py` (11), `test_graph.py` (9), `test_pipeline.py` (9) |
+| FR-04 PageRank | Not implemented | — |
+| FR-05 Betweenness | Not implemented | — |
+| FR-06 Circular dependencies | Partial | `test_cycles.py` (8); not yet in `AnalysisPipeline` |
+| FR-07 REST API | Not implemented | `test_api.py` stub |
+| FR-13 Pipeline metrics | Not implemented | — |
+| FR-14 Benchmark CLI | Not implemented | — |
+
+**Parser milestone (Week 1):** `PYTHONPATH=. pytest tests/test_parser.py -v`  
+**Graph + cycles (Week 2):** `PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ -v`
+
 ---
 
 ## 12. Project Plan & Milestones
@@ -639,27 +657,29 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 *Goal: Pure Python. No web server. No frontend. Prove the analysis works.*
 
 **Week 1: Parser**
-- Set up project structure and Git repo
-- Implement `ASTParser` — parse a single `.py` file and extract imports
-- Handle absolute imports (`import os`), from-imports (`from os import path`), and aliased imports (`import numpy as np`)
-- Write unit tests for the parser against 10+ edge case files
-- Milestone: `python parse.py path/to/file.py` prints all imports correctly
+- [x] Set up project structure and Git repo
+- [x] Implement `ASTParser` — parse a single `.py` file and extract imports
+- [x] Handle absolute imports (`import os`), from-imports (`from os import path`), and aliased imports (`import numpy as np`)
+- [x] Write unit tests for the parser against 10+ edge case files — `tests/test_parser.py` (11 parametrized + integration cases)
+- [x] Milestone: `python -m app.parser.cli path/to/file.py` prints all imports correctly
 
 **Week 2: Graph Builder + Algorithms**
-- Implement `GraphBuilder` — assemble parsed files into a NetworkX DiGraph
-- Implement PageRank computation
-- Implement Betweenness Centrality computation
-- Implement cycle detection
-- Write unit tests for graph algorithms using small synthetic graphs
-- Milestone: `python analyze.py path/to/repo/` prints top 10 critical files and any cycles
+- [x] Implement `GraphBuilder` — assemble parsed files into a dependency graph (`GraphResult`)
+- [ ] Implement PageRank computation
+- [ ] Implement Betweenness Centrality computation
+- [x] Implement cycle detection — `CycleDetector` (`graph/algorithms/cycles.py`)
+- [x] Write unit tests for graph algorithms using small synthetic graphs — structure + cycles (`test_graph.py`, `test_cycles.py`)
+- [ ] Milestone: `python analyze.py path/to/repo/` prints top 10 critical files and any cycles
 
 **Week 3: Ingestion + Integration**
-- Implement `IngestionService` — clone a GitHub repo to temp directory
-- Wire all components together end to end with pipeline stage instrumentation
-- Add benchmark CLI: `python -m app.benchmark --repo path/to/project`
-- Output results as JSON file
-- Test against 3 different real Python repos
-- Milestone: `python ripple.py https://github.com/owner/repo` produces a valid `result.json`
+- [ ] Implement `IngestionService` — clone a GitHub repo to temp directory
+- [x] Walk repo and parse all `.py` files — `parse_repository()` (directory path, not zip)
+- [x] Wire parse → graph in `AnalysisPipeline`
+- [ ] Wire full pipeline with pipeline stage instrumentation
+- [ ] Add benchmark CLI: `python -m app.benchmark --repo path/to/project`
+- [ ] Output results as JSON file
+- [ ] Test against 3 different real Python repos
+- [ ] Milestone: end-to-end CLI produces a valid `result.json` with scores and cycles
 
 *At the end of Phase 1, the hard work is done. Everything after this is presentation.*
 
@@ -669,7 +689,7 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 *Goal: Wrap the analysis engine in FastAPI. Enable async job processing.*
 
 **Week 4: FastAPI Setup + Database**
-- Set up FastAPI project, Docker Compose (FastAPI + PostgreSQL)
+- [x] Set up FastAPI project, Docker Compose (FastAPI + PostgreSQL) — health endpoint only
 - Implement PostgreSQL schema (migrations via Alembic)
 - Implement `POST /api/analyze` — accepts URL, starts background job, returns repo_id
 - Implement `GET /api/status/{repo_id}` — returns job status and `metrics[]` when complete
@@ -688,7 +708,7 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 *Goal: Build the React + Cytoscape.js interface. Make it demo-ready.*
 
 **Week 6: Graph Visualization**
-- Set up React project (Vite)
+- [x] Set up React project (Vite)
 - Integrate Cytoscape.js
 - Render nodes and edges from API response
 - Apply color and size encoding based on criticality scores
@@ -701,12 +721,12 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 - Milestone: Full interaction flow works end to end
 
 **Week 8: Polish + Documentation**
-- Add URL input form on homepage
-- Add recent analyses list
-- Write README with architecture explanation, screenshots, and setup instructions
-- Record a 2-minute demo video
-- Deploy (optional: Railway or Render for backend, Vercel for frontend)
-- Milestone: Project is portfolio-ready
+- [ ] Add URL input form on homepage
+- [ ] Add recent analyses list
+- [x] Write README with architecture explanation, screenshots, and setup instructions — architecture and setup done; screenshots pending
+- [ ] Record a 2-minute demo video
+- [ ] Deploy (optional: Railway or Render for backend, Vercel for frontend)
+- [ ] Milestone: Project is portfolio-ready
 
 ---
 

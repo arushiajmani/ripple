@@ -100,10 +100,14 @@ ripple/
 │   │       └── models.py       # SQLAlchemy ORM models
 │   │
 │   └── tests/
-│       ├── test_parser.py
-│       ├── test_graph.py
-│       ├── test_pipeline.py
-│       └── test_api.py          # stub
+│       ├── test_parser.py       # ASTParser + parse_repository (11)
+│       ├── test_graph.py        # GraphBuilder (9)
+│       ├── test_pipeline.py     # AnalysisPipeline (9)
+│       ├── test_api.py          # stub
+│       ├── algorithms/
+│       │   └── test_cycles.py   # CycleDetector (8)
+│       └── fixtures/
+│           └── mini_repo/       # shared parser + pipeline fixture
 │
 └── frontend/
     ├── Dockerfile
@@ -139,6 +143,25 @@ api/ → pipeline/ → parser/ + graph/ + ingestion/
 ```
 
 No component imports from a component "above" it in this hierarchy. The API layer calls the pipeline. The pipeline calls the parser and graph builder. The parser and graph builder don't know the API exists. This is the **dependency inversion principle** applied structurally.
+
+### Test layout and isolation
+
+Tests mirror component boundaries so each layer can be verified without pulling in the full stack:
+
+| Layer | Test file | Count | Isolates |
+|-------|-----------|-------|----------|
+| Parser | `tests/test_parser.py` | 11 | `ASTParser`, `parse_repository` — no graph |
+| Graph | `tests/test_graph.py` | 9 | `GraphBuilder` — synthetic `FileAnalysis`, no parser |
+| Pipeline | `tests/test_pipeline.py` | 9 | `AnalysisPipeline` — parse → graph on temp repos |
+| Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `GraphResult` only |
+
+**37 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
+
+- **pytest primer (verbose mode, flags, fixtures):** [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest)
+- **Quick commands:** [README — Tests](../README.md#tests)
+- **Full catalog (every test name):** [learn.md — Testing overview](./learn.md#testing-overview)
+- **Milestone gates:** [Roadmap](./Roadmap.md) (Week 1–2 milestone checks)
+- **Requirements mapping:** [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements)
 
 ---
 

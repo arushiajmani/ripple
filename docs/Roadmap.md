@@ -55,20 +55,20 @@ This is the most important phase. Everything else is presentation. If the analys
 
 #### Tasks
 
-- [ ] Implement `ASTParser` class in `backend/app/parser/ast_parser.py`
-- [ ] Handle absolute imports: `import os`, `import numpy as np`
-- [ ] Handle from-imports: `from os import path`, `from os.path import join`
-- [ ] Handle relative imports: `from . import utils`, `from .utils import helper`
-- [ ] Handle aliased imports: `import pandas as pd`, `from collections import defaultdict as dd`
-- [ ] Extract class definitions (name, base classes)
-- [ ] Extract function/method definitions (name, parent class if any)
-- [ ] Return structured `FileAnalysis` dataclass with all extracted information
-- [ ] Write unit tests covering all import forms above
+- [x] Implement `ASTParser` class in `backend/app/parser/ast_parser.py`
+- [x] Handle absolute imports: `import os`, `import numpy as np`
+- [x] Handle from-imports: `from os import path`, `from os.path import join`
+- [x] Handle relative imports: `from . import utils`, `from .utils import helper`
+- [x] Handle aliased imports: `import pandas as pd`, `from collections import defaultdict as dd`
+- [x] Extract class definitions (name, base classes)
+- [x] Extract function/method definitions (name, parent class if any)
+- [x] Return structured `FileAnalysis` dataclass with all extracted information
+- [x] Write unit tests covering all import forms above — `tests/test_parser.py`
 - [ ] Test against at least 5 real Python files from different open source projects
 
 #### Milestone Check
 
-Run `python -m backend.app.parser.ast_parser path/to/any_file.py` and see correctly extracted imports, classes, and functions printed to terminal. No crashes on any valid Python file.
+Run `python -m app.parser.cli path/to/any_file.py` and see correctly extracted imports, classes, and functions printed to terminal. Verify with `PYTHONPATH=. pytest tests/test_parser.py -v` (11 cases). **pytest help:** [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest).
 
 #### Common Pitfalls To Avoid
 
@@ -85,22 +85,29 @@ Run `python -m backend.app.parser.ast_parser path/to/any_file.py` and see correc
 
 #### Tasks
 
-- [ ] Implement `GraphBuilder` class in `backend/app/graph/builder.py`
-- [ ] Resolve relative imports to absolute file paths using folder structure
-- [ ] Handle unresolvable imports gracefully (external packages like `requests`, `numpy` — skip or add as external nodes)
+- [x] Implement `GraphBuilder` class in `backend/app/graph/builder.py`
+- [x] Resolve relative imports to absolute file paths using folder structure
+- [x] Handle unresolvable imports gracefully (external packages like `requests`, `numpy` — skip or add as external nodes)
 - [ ] Build `nx.DiGraph` where nodes are file paths and edges are import relationships
-- [ ] Implement `AlgorithmEngine` class in `backend/app/graph/algorithms.py`
+- [ ] Implement `AlgorithmEngine` class in `backend/app/graph/algorithms/` (unified scoring entry point)
 - [ ] Compute PageRank scores (`nx.pagerank`, alpha=0.85)
 - [ ] Compute Betweenness Centrality (`nx.betweenness_centrality`)
 - [ ] Compute composite criticality score: `0.6 * normalized_pagerank + 0.4 * normalized_betweenness`
-- [ ] Detect circular dependencies (`nx.simple_cycles`)
+- [x] Detect circular dependencies (`nx.simple_cycles`) — `CycleDetector` in `graph/algorithms/cycles.py` (not yet wired into `AnalysisPipeline`)
 - [ ] Compute in-degree and out-degree for each node
-- [ ] Write unit tests using small synthetic graphs (5–10 nodes) with known correct answers
+- [x] Write unit tests using small synthetic graphs (5–10 nodes) with known correct answers — graph structure + cycle detection (`test_graph.py`, `test_cycles.py`); score assertions pending PageRank/betweenness
 - [ ] Serialize graph results to JSON
 
 #### Milestone Check
 
-Run analysis on a Python project with 20+ files. Top-ranked files intuitively make sense (entry points, shared utilities rank highly). Circular dependencies, if any, are correctly identified.
+Graph structure and cycles (no scoring yet):
+
+```bash
+PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ -v   # 17 tests
+PYTHONPATH=. pytest tests/test_pipeline.py -v                  # parse → graph integration
+```
+
+When PageRank/betweenness land, re-run analysis on a 20+ file project and confirm top-ranked files match intuition.
 
 #### Understanding The Algorithms (For Interviews)
 
@@ -120,9 +127,9 @@ Run analysis on a Python project with 20+ files. Top-ranked files intuitively ma
 
 - [ ] Implement `IngestionService` in `backend/app/ingestion/service.py`
 - [ ] Accept zip file, extract to temp directory (`/tmp/ripple/{job_id}/`)
-- [ ] Walk directory tree, collect all `.py` files
-- [ ] Filter out virtual environments (`venv/`, `.venv/`, `env/`), build artifacts (`__pycache__/`, `*.pyc`), test files (optional — include for now, filter later)
-- [ ] Wire `IngestionService` → `ASTParser` → `GraphBuilder` → `AlgorithmEngine` into a single `AnalysisPipeline` class
+- [x] Walk directory tree, collect all `.py` files — via `parse_repository()` / `collect_python_files()`
+- [x] Filter out virtual environments (`venv/`, `.venv/`, `env/`), build artifacts (`__pycache__/`, `*.pyc`), test files (optional — include for now, filter later) — via `SKIP_DIRS` in `parser/models.py`
+- [ ] Wire `IngestionService` → `ASTParser` → `GraphBuilder` → `AlgorithmEngine` into a single `AnalysisPipeline` class — partial: `AnalysisPipeline` wires parse → graph only
 - [ ] Instrument every pipeline stage with timing: `file_discovery`, `ast_parsing` (total + per-file average), `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization` — timings held on `PipelineResult`
 - [ ] Add benchmark CLI: `python -m app.benchmark --repo path/to/project` — runs the pipeline and prints a formatted timing breakdown to stdout (for performance testing on large repos)
 - [ ] Output complete result as a JSON file
@@ -239,7 +246,7 @@ Transitive dependents = all ancestors (`nx.ancestors(G, target_file)`)
 
 #### Tasks
 
-- [ ] Set up React project with Vite, install Cytoscape.js and react-cytoscapejs
+- [x] Set up React project with Vite, install Cytoscape.js and react-cytoscapejs — Vite scaffold only; Cytoscape not installed
 - [ ] Create `GraphCanvas` component that accepts nodes and edges as props
 - [ ] Fetch graph data from `GET /api/graph/{repo_id}` on page load
 - [ ] Render nodes with color encoding: red (criticality > 0.7), orange (> 0.4), green (< 0.4)
@@ -283,7 +290,7 @@ Full interaction flow works: click a node → sidebar updates → dependents hig
 - [ ] Show progress indicator during analysis ("Parsing files... Building graph... Computing scores...")
 - [ ] Build `AnalysisPage` that loads when status becomes `"complete"`
 - [ ] Add error states: invalid zip, analysis failed, network error
-- [ ] Write `README.md` with: project description, architecture overview, setup instructions, screenshots
+- [x] Write `README.md` with: project description, architecture overview, setup instructions, screenshots — description, architecture, and setup done; screenshots pending
 - [ ] Record a 2-minute demo video showing the full flow
 - [ ] (Optional) Deploy: Railway or Render for backend + PostgreSQL, Vercel for frontend
 

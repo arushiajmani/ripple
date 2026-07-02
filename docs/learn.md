@@ -3,7 +3,7 @@
 > Read this to understand **what the code does, why it's shaped this way, and how data flows through it.**
 > One section per shipped component. Future phases are listed so you know what's coming.
 
-*Last updated: 2026-06-24*
+*Last updated: 2026-06-26*
 
 ---
 
@@ -16,14 +16,14 @@
 | `repository.py` — `parse_repository()` | Yes |
 | `cli.py` — terminal output | Yes |
 | Structured `ImportInfo` (module, alias, type) | Yes |
-| Absolute / from / relative / aliased imports | Yes (logic in code; needs more tests) |
+| Absolute / from / relative / aliased imports | Yes (covered in `test_parser.py`) |
 | Extract classes (name + bases + methods) | Yes |
 | Separate module functions vs class methods | Yes |
 | `resolved_deps` / `external_deps` classification | Yes (requires `project_files`) |
 | Suffix path matching (`app.parser` → `backend/app/parser/…`) | Yes |
 | `FileAnalysis` dataclass | Yes |
 | CLI: `python -m app.parser.cli <file-or-repo>` | Yes |
-| Unit tests in `tests/test_parser.py` | Yes (5 cases) |
+| Unit tests in `tests/test_parser.py` | Yes (11 cases) |
 | `IngestionService` (zip upload, filters) | No |
 | Test against 5 real open-source files | No |
 
@@ -37,8 +37,8 @@
 | Filter deps to in-repo nodes only | Yes |
 | Deduplicate edges, deterministic sort | Yes |
 | Unit tests in `tests/test_graph.py` (9 cases) | Yes |
-| `AlgorithmEngine` (PageRank, cycles, scores) | No |
-| `nx.DiGraph` wrapper / conversion | No |
+| `CycleDetector` + `tests/algorithms/test_cycles.py` (8 cases) | Yes |
+| `AlgorithmEngine` (PageRank, betweenness, criticality) | No |
 
 ### Checklist (pipeline)
 
@@ -666,29 +666,38 @@ print(ast.dump(tree, indent=2))
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 23 tests
-PYTHONPATH=. pytest tests/test_parser.py -v      # parser only (5)
+PYTHONPATH=. pytest tests/ -v                    # all 37 tests
+PYTHONPATH=. pytest tests/test_parser.py -v      # parser only (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder only (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline only (9)
+PYTHONPATH=. pytest tests/algorithms/ -v         # cycle detection only (8)
 ```
 
 If you `cd tests/` first, use `PYTHONPATH=.. pytest . -v` — not `pytest tests/`.
 
-See [Testing overview](#testing-overview) for what each suite covers.
+**New to pytest?** See [Introduction to pytest](#introduction-to-pytest) (verbose mode, running one test, flags, fixtures, parametrization).
+
+See [Testing overview](#testing-overview) for what each suite covers. For where to run tests in other docs: [README](../README.md#tests) (quick commands), [Roadmap](./Roadmap.md) (milestone checks), [SRS](./SRS_ProjectPlan.md) (requirements traceability).
 
 ### 10. Tests (`test_parser.py`)
 
-Integration tests against `tests/fixtures/mini_repo` and the full ripple repo root. **5 tests** — coverage is via `parse_repository()`, not isolated `ASTParser` calls.
+**11 cases** — `ASTParser` unit tests (inline source) plus `parse_repository()` integration on `tests/fixtures/mini_repo` and the ripple repo root.
 
-| Test | What it proves |
-|------|----------------|
-| `test_collect_python_files_skips_cache_dirs` | `venv`, `__pycache__`, etc. are excluded from the file walk |
-| `test_parse_repository_returns_all_files` | Every collected `.py` file gets a `FileAnalysis`; keys match paths |
-| `test_parse_repository_resolves_internal_deps` | `auth.py` resolves `models.py` / `utils.py` internally; `os` / `requests` stay external |
-| `test_parse_repository_external_only_for_utils` | File with only third-party/stdlib imports has empty `resolved_deps` |
-| `test_module_resolution_matches_path_suffix` | `from app.parser.models` resolves to `backend/app/parser/models.py` when repo root is above `backend/` |
+| Test | Style | What it proves |
+|------|-------|----------------|
+| `test_external_import_forms[absolute]` | unit | `import os`, `import numpy as np` → `ImportInfo` + `external_deps` |
+| `test_external_import_forms[from_import]` | unit | `from os import path`, `from os.path import join` |
+| `test_external_import_forms[aliased]` | unit | `import pandas as pd`, `from collections import defaultdict as dd` |
+| `test_relative_imports_resolve_to_project_files[…]` | unit | `.`, `..`, and `from . import` resolve to in-repo paths |
+| `test_future_import_ignored` | unit | `from __future__ import annotations` is skipped, not recorded |
+| `test_syntax_error_returns_flag_without_raising` | unit | Invalid syntax → `has_syntax_error=True`, empty imports |
+| `test_collect_python_files_skips_cache_dirs` | integration | `venv`, `__pycache__`, etc. excluded from file walk |
+| `test_parse_repository_mini_repo` | integration | Full fixture walk, internal vs external deps on `auth.py` / `utils.py` |
+| `test_module_resolution_matches_path_suffix` | integration | `from app.parser.models` → `backend/app/parser/models.py` when repo root is above `backend/` |
 
-**Fixture:** `tests/fixtures/mini_repo/` — tiny `myapp` package for internal vs external dependency checks.
+**Fixture:** `tests/fixtures/mini_repo/` — tiny `myapp` package for dependency classification.
+
+**How to run only parser tests:** `PYTHONPATH=. pytest tests/test_parser.py -v`
 
 ---
 
@@ -857,25 +866,206 @@ CLI: `python -m app.pipeline <repo-path>` (directory only today).
 
 ---
 
+## Introduction to pytest
+
+**pytest** is Python's most common test runner. You write small functions that call your code and use `assert` to check the result; pytest discovers those functions, runs them, and reports pass/fail.
+
+Ripple uses pytest for all backend tests (`backend/tests/`). It is listed in `backend/requirements.txt` and installed when you set up the virtualenv.
+
+### Setup (one time)
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+After that, `pytest` is available inside the activated venv. You can also run it as `python -m pytest` (same thing).
+
+### Where to run commands
+
+Always run pytest from **`backend/`**, with **`PYTHONPATH=.`** so Python can import the `app` package:
+
+```bash
+cd backend
+source .venv/bin/activate
+PYTHONPATH=. pytest tests/ -v
+```
+
+| Mistake | What happens |
+|---------|----------------|
+| Run from repo root without `cd backend` | Paths like `tests/test_parser.py` may not resolve |
+| Omit `PYTHONPATH=.` | `ModuleNotFoundError: No module named 'app'` |
+| `cd tests/` then `pytest tests/` | Looks for `tests/tests/` — use `PYTHONPATH=.. pytest . -v` instead |
+
+### What a test looks like
+
+Pytest **auto-discovers** functions whose names start with `test_` in files named `test_*.py`:
+
+```python
+def test_two_plus_two():
+    assert 2 + 2 == 4
+```
+
+If the assertion is true, the test **passes**. If it raises `AssertionError`, the test **fails** and pytest prints what went wrong.
+
+Ripple example (from `test_parser.py`):
+
+```python
+def test_future_import_ignored(parser: ASTParser) -> None:
+    analysis = parser.parse_file(
+        "myapp/auth/session.py",
+        "from __future__ import annotations\nimport os\n",
+    )
+    assert analysis.imports == [ImportInfo(module="os", type="import")]
+    assert analysis.external_deps == ["os"]
+```
+
+No special test class or boilerplate — plain functions and `assert`.
+
+### Output modes: default, verbose, quiet
+
+| Flag | Command | What you see |
+|------|---------|--------------|
+| *(none)* | `pytest tests/` | One `.` per passed test; `F` for failure; summary at the end |
+| **`-v`** (verbose) | `pytest tests/ -v` | **One line per test** with `PASSED` or `FAILED` and the full test name — best for learning and debugging |
+| **`-q`** (quiet) | `pytest tests/ -q` | Minimal output: just a progress bar of dots and a one-line summary |
+
+**Use `-v` while you're learning** — you see exactly which tests ran:
+
+```text
+tests/test_parser.py::test_external_import_forms[absolute] PASSED
+tests/test_parser.py::test_external_import_forms[from_import] PASSED
+...
+======================== 37 passed in 0.47s ========================
+```
+
+Parametrized tests (see below) show the case name in brackets, e.g. `[absolute]`, `[from_import]`.
+
+### Running a subset of tests
+
+| Goal | Command |
+|------|---------|
+| All tests | `PYTHONPATH=. pytest tests/ -v` |
+| One file | `PYTHONPATH=. pytest tests/test_parser.py -v` |
+| One directory | `PYTHONPATH=. pytest tests/algorithms/ -v` |
+| One test by name | `PYTHONPATH=. pytest tests/test_parser.py::test_future_import_ignored -v` |
+| One parametrized case | `PYTHONPATH=. pytest tests/test_parser.py::test_external_import_forms[absolute] -v` |
+| Name pattern (`-k`) | `PYTHONPATH=. pytest tests/ -k "cycle" -v` — runs tests whose names contain `cycle` |
+| List without running | `PYTHONPATH=. pytest tests/ --collect-only` |
+
+The `::` syntax is **file path :: function name** (and optionally `[param_id]` for parametrized cases).
+
+### Useful flags when something breaks
+
+| Flag | Meaning |
+|------|---------|
+| `-v` | Verbose — show each test name |
+| `-q` | Quiet — fewer lines |
+| `-x` | Stop on the **first** failure (don't run the rest) |
+| `-s` | Show `print()` output (pytest normally captures it) |
+| `--tb=short` | Shorter tracebacks (default is reasonably short) |
+| `--tb=long` | Full traceback — good for deep debugging |
+| `--tb=no` | No traceback — only the failure summary |
+| `-vv` | Extra verbose (more detail on assertions) |
+
+Example while fixing a bug:
+
+```bash
+PYTHONPATH=. pytest tests/test_parser.py::test_syntax_error_returns_flag_without_raising -vv --tb=long
+```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All tests passed |
+| `1` | At least one test failed |
+| `2` | Pytest itself errored (bad arguments, collection error, etc.) |
+| `5` | No tests collected (wrong path or empty file) |
+
+CI and scripts use this: `pytest` returning non-zero means "don't ship."
+
+### Features Ripple tests use
+
+**Fixtures** — reusable setup passed into tests by name:
+
+```python
+@pytest.fixture
+def parser() -> ASTParser:
+    return ASTParser(project_files=RELATIVE_IMPORT_FILES)
+
+def test_future_import_ignored(parser: ASTParser) -> None:
+    analysis = parser.parse_file(...)   # pytest injects the fixture
+```
+
+**Parametrize** — one test function, many input cases (counts as multiple tests):
+
+```python
+@pytest.mark.parametrize("content,expected", [("import os", ["os"]), ...], ids=["absolute", "from_import"])
+def test_external_import_forms(parser, content, expected):
+    ...
+```
+
+That is why `pytest --collect-only` reports **11** tests in `test_parser.py` even though there are fewer function definitions — parametrized cases each count separately.
+
+**Monkeypatch** (in `test_pipeline.py`) — temporarily replace a function for one test without changing production code.
+
+### Typical workflow
+
+1. Change code in `backend/app/…`
+2. Run the **smallest** relevant suite first (e.g. parser → `test_parser.py`)
+3. Use **`-v`** to see which case failed; use **`::test_name`** to re-run only that test
+4. When green, run **`PYTHONPATH=. pytest tests/ -v`** for the full suite before committing
+
+### Further reading
+
+- [pytest documentation](https://docs.pytest.org/) — official reference
+- [Testing overview](#testing-overview) below — what each Ripple test file covers
+- [README — Tests](../README.md#tests) — copy-paste command cheat sheet
+
+---
+
 ## Testing overview
 
-**23 tests** across three suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+**37 tests** across four suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+
+This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
 
 ### Strategy by layer
 
 | Suite | File | Tests | Style | What it isolates |
 |-------|------|-------|-------|------------------|
-| Parser | `test_parser.py` | 5 | Integration | File walk, `parse_repository`, import resolution |
+| Parser | `test_parser.py` | 11 | Unit + integration | `ASTParser` import forms; `parse_repository` walk + resolution |
 | Graph | `test_graph.py` | 9 | Unit | `GraphBuilder` rules via synthetic `FileAnalysis` dicts |
 | Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline` wiring; temp repos + one monkeypatch |
+| Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `GraphResult` |
 
 ```
-test_parser.py     →  parse_repository  →  FileAnalysis
-test_graph.py      →  GraphBuilder      →  GraphResult     (no parser)
-test_pipeline.py   →  AnalysisPipeline  →  PipelineResult  (parse + graph)
+test_parser.py     →  ASTParser / parse_repository  →  FileAnalysis
+test_graph.py      →  GraphBuilder                  →  GraphResult     (no parser)
+test_pipeline.py   →  AnalysisPipeline              →  PipelineResult  (parse + graph)
+test_cycles.py     →  CycleDetector                 →  CircularDependencyResult
 ```
 
-Parser tests do **not** call `GraphBuilder`. Graph tests do **not** call `parse_repository`. Pipeline tests exercise the full path except where monkeypatch injects controlled parse output.
+Parser tests do **not** call `GraphBuilder`. Graph tests do **not** call `parse_repository`. Pipeline tests exercise parse → graph except where monkeypatch injects controlled parse output. Cycle tests use `GraphResult` only — not wired into `AnalysisPipeline` yet.
+
+### Parser tests (`test_parser.py`) — full list
+
+| Test | What it proves |
+|------|----------------|
+| `test_external_import_forms[absolute]` | Absolute imports recorded; classified as external without `project_files` |
+| `test_external_import_forms[from_import]` | From-imports for stdlib modules |
+| `test_external_import_forms[aliased]` | `as` aliases on import and from-import |
+| `test_relative_imports_resolve_to_project_files[same_package]` | `from .utils import …` → in-repo file |
+| `test_relative_imports_resolve_to_project_files[parent_package]` | `from ..config import …` → parent package file |
+| `test_relative_imports_resolve_to_project_files[package_init]` | `from . import utils` |
+| `test_future_import_ignored` | `__future__` imports omitted from `imports` |
+| `test_syntax_error_returns_flag_without_raising` | Broken file does not crash parser |
+| `test_collect_python_files_skips_cache_dirs` | `SKIP_DIRS` honored during walk |
+| `test_parse_repository_mini_repo` | End-to-end fixture: all files parsed, deps classified |
+| `test_module_resolution_matches_path_suffix` | Long repo paths resolve via suffix match |
 
 ### Graph builder tests (`test_graph.py`) — full list
 
@@ -893,15 +1083,31 @@ Parser tests do **not** call `GraphBuilder`. Graph tests do **not** call `parse_
 
 Uses `make_file()` helper for realistic `FileAnalysis` fixtures without touching the filesystem.
 
+### Cycle detection tests (`test_cycles.py`) — full list
+
+| Test | What it proves |
+|------|----------------|
+| `test_empty_graph_has_no_cycles` | Empty `GraphResult` → no cycles |
+| `test_acyclic_repository_has_no_cycles` | Tree-shaped graph → `has_cycles` false |
+| `test_simple_three_node_cycle` | A→B→C→A detected and normalized |
+| `test_self_loop_is_a_cycle` | Single-node cycle |
+| `test_two_disjoint_cycles` | Multiple independent cycles |
+| `test_cycle_normalized_to_lexicographic_start` | Rotation canonicalization |
+| `test_detect_deduplicates_rotations` | Same cycle not reported twice |
+| `test_run_matches_detect` | `run()` alias equals `detect()` |
+
+Run only cycle tests: `PYTHONPATH=. pytest tests/algorithms/ -v`
+
 ### Not covered yet
 
 | Area | Notes |
 |------|-------|
-| `ASTParser.parse_file` in isolation | Exercised indirectly via `parse_repository` |
 | Single-file pipeline input | CLI accepts dirs only |
-| `AlgorithmEngine` / NetworkX | Planned |
+| PageRank / betweenness / criticality | Planned `AlgorithmEngine` |
+| `CycleDetector` in `AnalysisPipeline` | Implemented but not wired |
 | API / `test_api.py` | Stub only |
-| Syntax-error files in pipeline | Covered in graph unit tests only |
+| Syntax-error files through pipeline | Covered in graph unit tests only |
+| Five real open-source repos | Roadmap Week 1 milestone — manual / future |
 
 ---
 
@@ -926,7 +1132,7 @@ Read [Roadmap.md](./Roadmap.md) for week-by-week tasks. Short preview:
 | `fastapi` + `uvicorn` | HTTP API |
 | `sqlalchemy` + `psycopg2` | Postgres ORM |
 | `networkx` | Graph algorithms (`AlgorithmEngine`, planned) |
-| `pytest` + `httpx` | Tests |
+| `pytest` + `httpx` | Backend tests — see [Introduction to pytest](#introduction-to-pytest) |
 
 ---
 
