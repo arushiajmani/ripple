@@ -157,22 +157,24 @@ Each builder is a **pure function** over the same `FileAnalysis` dict. Repositor
 | Edges | Import relationships from `resolved_deps` |
 | Components | `ASTParser`, RepositoryParser, `GraphBuilder`, `CycleDetector`, `AlgorithmEngine`, `AnalysisPipeline` |
 | Pipeline output | `PipelineResult(analyses, graph, cycles, scores)` |
-| Out of scope for V1 graph | External packages as nodes, class/function edges, scores |
+| Out of scope for V1 graph | External packages as nodes; class/function/`inherits`/`calls` edges |
 
 ### V2 — Richer structure graphs
 
 | Capability | Data source | Example |
 |------------|-------------|---------|
-| **Class-level graph** | `ClassInfo`, `ClassInfo.bases` | `Admin → User` (inheritance) |
+| **Class-level graph** | `ClassInfo`, `ClassInfo.bases` + **base resolution** | `Admin → User` (`type: "inherits"`) |
 | **Class dependency analysis** | Type usage, constructors, cross-class references (TBD) | `Helper → User` |
 | **Function-level graph** | `functions`, `methods` | Module-level call relationships |
-| **Function call graph** | AST call-site extraction (new analysis pass or extended walk) | `login()` calls `hash_password()` |
+| **Function call graph** | AST call-site extraction (new analysis pass or extended walk) | `login()` calls `hash_password()` (`type: "calls"`) |
 | **Impact analysis** | File graph + traversal | "What breaks if I change file X?" |
 | **Enriched file nodes** | `line_count`, class/function counts | Size and complexity in the UI |
 | **Library analytics** | `external_deps` per file | Most-used libraries; files depending on `requests` or `numpy` |
 | **Graph algorithms** | `GraphResult` → NetworkX | V1: cycles + criticality shipped; V2 may add more analytics |
 
 V2 adds **new builders** (class/function graphs) — not a new parser. Cycle detection and criticality scoring are V1-ready.
+
+**Why class inheritance edges wait for V2:** bases are stored as **name strings**, not resolved file/class targets; inheritance is **class→class** while V1 nodes are **files**; aliases, name clashes, and dynamic bases need a resolver. The JSON edge shape already allows `type: "inherits"`. Detail: [Why not `type: "inherits"` yet](#why-not-type-inherits-or-calls-yet).
 
 ### V3 — AI-assisted insights
 
@@ -1215,11 +1217,16 @@ result.write_json("result.json")
 
 ```json
 {
-  "metadata": { "created_at": "2026-07-04T12:00:00Z" },
+  "metadata": { "generated_at": "2026-07-04T12:00:00Z" },
   "summary":  { "file_count", "node_count", "edge_count", "cycle_count",
                 "class_count", "function_count",
                 "internal_dependency_count", "external_dependency_count" },
-  "graph":    { "nodes": ["path.py", ...], "edges": [["a.py", "b.py"], ...] },
+  "graph": {
+    "nodes": ["path.py", ...],
+    "edges": [
+      { "source": "a.py", "target": "b.py", "type": "imports" }
+    ]
+  },
   "analysis": { "cycles": {...}, "scores": [...], "top_critical": [...] },
   "files":    { "path.py": { /* full FileAnalysis */ }, ... }
 }
@@ -1227,7 +1234,7 @@ result.write_json("result.json")
 
 | Section | Purpose |
 |---------|---------|
-| **`metadata`** | `created_at` (UTC ISO-8601) |
+| **`metadata`** | `generated_at` (UTC ISO-8601) |
 | **`summary`** | Cheap repo stats for dashboards / status UIs |
 | **`graph`** | Structural file import graph only |
 | **`analysis`** | All algorithm outputs (cycles, scores today; more later) |
@@ -1240,10 +1247,11 @@ result.write_json("result.json")
 | Nest `nodes` / `edges` under **`graph`** | Structure is one concern; scores are not part of the graph payload |
 | Nest cycles / scores under **`analysis`** | New algorithms (`impact_analysis`, `communities`, …) add keys *inside* `analysis` without new top-level fields |
 | Rename `analyses` → **`files`** | Keys are file paths; values are per-file parse records |
-| Add **`metadata`** | Provenance (`created_at`) for API clients |
+| Add **`metadata`** | Provenance (`generated_at`) for API clients |
 | Richer **`summary`** | Counts only — no extra algorithms |
+| Edges as **`{source, target, type}`** | Self-describing; `type: "imports"` today, later `calls` / `inherits` / `contains` |
 
-**Trade-offs:** Older flat JSON (`nodes` at top level, `analyses`) is **not** produced anymore — this is a deliberate shape change before the public API freezes.
+**Trade-offs:** Older flat JSON (`nodes` at top level, `analyses`, pair-list edges) is **not** produced anymore — this is a deliberate shape change before the public API freezes.
 
 #### Nodes stay path strings (V1)
 
@@ -1252,6 +1260,61 @@ result.write_json("result.json")
 ```
 
 Not `{ "id", "type": "file" }` yet. Path *is* the node identity for the file graph; `analysis.scores` and `files` already carry rich per-node data. Object nodes become useful when one payload mixes file / class / function graphs — defer until then.
+
+#### Edges are self-describing objects
+
+```json
+"edges": [
+  { "source": "myapp/auth.py", "target": "myapp/models.py", "type": "imports" }
+]
+```
+
+`source` is the importer, `target` is the imported file (same as in-memory `(importer, imported)`). Named fields avoid positional ambiguity; `type` leaves room for other relationships without a new edge shape.
+
+#### Cycles are objects, not bare path arrays
+
+```json
+"analysis": {
+  "cycles": {
+    "has_cycles": true,
+    "cycle_count": 1,
+    "cycles": [
+      {
+        "nodes": ["myapp/models.py", "myapp/utils.py"],
+        "length": 2,
+        "edges": [
+          { "source": "myapp/models.py", "target": "myapp/utils.py", "type": "imports" },
+          { "source": "myapp/utils.py", "target": "myapp/models.py", "type": "imports" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| **`nodes`** | Ordered open path (first node is not repeated at the end); cycle closes last → first |
+| **`length`** | `len(nodes)` |
+| **`edges`** | Each step of the loop, same shape as `graph.edges` |
+
+Bare `[["a.py", "b.py"]]` lists are not used — clients should not have to infer that an array is a cycle.
+
+#### Why not `type: "inherits"` (or `calls`) yet
+
+The JSON edge shape is ready (`type` can be `"inherits"` later). We do **not** emit inheritance edges today because the **data and graph model are not ready** — not because of serialization.
+
+| Blocker | Detail |
+|---------|--------|
+| **Bases are names, not targets** | Parser stores `ClassInfo.bases` as strings (`"User"`, `"pkg.Model"`). Imports are resolved to file paths via `module_to_file_path`; bases are **not**. We still need: which class in which file is `User`? |
+| **Inheritance is class→class** | V1 nodes are **file paths**. Inheritance links **classes**. Emitting file-level “inherits” edges is lossy (multi-class files). Correct model is a **class graph** (e.g. nodes like `myapp/models.py::User`) — planned `ClassGraphBuilder` (V2). |
+| **Hard cases** | Aliased imports (`User as U` then `class Admin(U)`), same name in two modules, dynamic bases (`class C(get_base()):`), mixins / multiple bases. |
+
+**What we already have:** `files[path].classes[].bases` in the JSON export (full `FileAnalysis`). That is enough for display and for a future resolver; it is **not** enough for trustworthy graph edges.
+
+**What V2 must add:** resolve each base name to a defining class (using imports + a class index), choose class-level node IDs, then emit `{ "source", "target", "type": "inherits" }` (likely under a `class_graph` or `graphs.class` section, not mixed into the file import graph without care).
+
+Same story for **`calls`**: needs call-site extraction and callee resolution, not just the edge object shape.
 
 #### Scores stay an ordered list
 
@@ -1265,10 +1328,12 @@ Every `FileAnalysis` field is exported (`imports`, `resolved_deps`, `external_de
 
 | Addition | Where it goes |
 |----------|----------------|
-| Class / function / call graphs | New top-level keys like `class_graph`, *or* `graphs: { "file": ..., "class": ... }` in a later schema version |
+| Class / function / call graphs | New top-level keys like `class_graph`, *or* `graphs: { "file": ..., "class": ... }` — with `type: "inherits"` / `"calls"` once resolved |
 | Impact analysis | `analysis.impact_analysis` |
 | Communities / SCCs / shortest paths | `analysis.communities`, etc. |
 | AI explanations | `analysis.explanations` or a sibling `insights` section in v2 |
+
+Inheritance / call edges are **not** blocked on JSON — see [Why not `type: "inherits"` yet](#why-not-type-inherits-or-calls-yet).
 
 Score field meanings: [What each property means](#1-what-each-property-means).
 

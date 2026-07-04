@@ -414,9 +414,11 @@ PipelineResult            analyses + graph + cycles + scores
 
 | Version | Capabilities |
 |---------|----------------|
-| **V1 (current)** | File-level graph; cycles + criticality scores on `PipelineResult` |
-| **V2** | Class graph (inheritance, dependencies), function/call graphs, impact analysis, `external_deps` analytics |
+| **V1 (current)** | File-level **import** graph (`type: "imports"`); cycles + criticality; JSON keeps full `classes[].bases` for later |
+| **V2** | Class graph (inheritance), function/call graphs, impact analysis, `external_deps` analytics |
 | **V3** | AI-assisted explanations, architectural insights, change-risk estimation |
+
+**Why V1 does not emit `type: "inherits"` edges:** the parser records base **names** (`ClassInfo.bases`), not resolved class/file targets; inheritance is class→class while V1 nodes are file paths; reliable edges need a base resolver and class-level node IDs (`ClassGraphBuilder`). The JSON edge object shape is already extensible. Detail: [learn.md — Why not `type: "inherits"` yet](./learn.md#why-not-type-inherits-or-calls-yet).
 
 Detail: [learn.md — Design Decisions](./learn.md#design-decisions) · [learn.md — Future Scope](./learn.md#future-scope)
 
