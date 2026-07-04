@@ -68,7 +68,7 @@ This is the most important phase. Everything else is presentation. If the analys
 
 #### Milestone Check
 
-Run `python -m app.parser.cli path/to/any_file.py` and see correctly extracted imports, classes, and functions printed to terminal. Verify with `PYTHONPATH=. pytest tests/test_parser.py -v` (11 cases). **pytest help:** [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest).
+Run `python -m app.parser.cli path/to/any_file.py` and see correctly extracted imports, classes, and functions printed to terminal. For `resolved_deps`, pass the **project root** (e.g. `python -m app.parser.cli .` from `backend/`), not a package subfolder. Verify with `PYTHONPATH=. pytest tests/test_parser.py -v` (11 cases). **pytest help:** [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest). **Root convention:** [learn.md — Analysis root convention](./learn.md#analysis-root-convention).
 
 #### Common Pitfalls To Avoid
 
@@ -76,6 +76,7 @@ Run `python -m app.parser.cli path/to/any_file.py` and see correctly extracted i
 - Files with syntax errors — catch `SyntaxError`, log the file, skip it, don't crash the whole analysis
 - Encoding issues — open files with `encoding='utf-8', errors='ignore'`
 - `__init__.py` files — parse them, they often contain important re-exports
+- **Wrong analysis root** — `python -m app.parser.cli ./app/parser` indexes `models.py` only; imports like `app.parser.models` then appear as `external_deps: app`. Always pass the project root (`.`, fixture root, or uploaded zip root)
 
 ---
 
@@ -106,6 +107,8 @@ Graph structure and cycles (no scoring yet):
 PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ -v   # 17 tests
 PYTHONPATH=. pytest tests/test_pipeline.py -v                  # parse → graph integration
 ```
+
+**CycleDetector study + test catalog:** [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection).
 
 When PageRank/betweenness land, re-run analysis on a 20+ file project and confirm top-ranked files match intuition.
 

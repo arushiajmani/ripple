@@ -154,8 +154,9 @@ pip install -r requirements.txt
 # single file
 python -m app.parser.cli tests/sample_file.py
 
-# whole repo (resolved vs external deps)
+# whole project (resolved vs external deps) — use project root, not a subpackage
 python -m app.parser.cli tests/fixtures/mini_repo
+python -m app.parser.cli .                          # backend/ as root (paths like app/parser/…)
 
 # one file from repo context
 python -m app.parser.cli tests/fixtures/mini_repo myapp/auth.py
@@ -163,12 +164,28 @@ python -m app.parser.cli tests/fixtures/mini_repo myapp/auth.py
 
 **Important:** use `python -m app.parser.cli` from `backend/`, not `python tests/...`, or Python won't find the `app` package. (`python -m app.parser.ast_parser` is a backward-compatible alias.)
 
+### Analysis root convention
+
+Always pass the **project root** (the directory that should own all relative file paths), not a package subfolder.
+
+| Root you pass | Paths in `project_files` | `from app.parser.models import …` |
+|---------------|--------------------------|-----------------------------------|
+| `backend/` (`.`) | `app/parser/models.py` | Resolves ✓ |
+| repo root (`..`) | `backend/app/parser/models.py` | Resolves via suffix match ✓ |
+| `app/parser/` | `models.py` only | **Does not resolve** — shows as `external_deps: app` |
+
+Imports use package names (`app.parser.models`); resolution maps those to **paths relative to the root you gave**. Pointing at `./app/parser` indexes only `models.py`, which does not match `app/parser/models.py`.
+
+This is intentional: production analysis (zip / clone / pipeline) always runs from the uploaded project root. Do not pass a subpackage folder and expect internal edges.
+
+Detail: [docs/learn.md — Analysis root convention](docs/learn.md#analysis-root-convention).
+
 ### Single file (no repo context)
 
 * `resolved_deps` — empty
 * `external_deps` — top-level packages from imports (`os`, `numpy`, …)
 
-### Whole repo
+### Whole project (correct root)
 
 * `resolved_deps` — paths to other project files (e.g. `myapp/utils.py`)
 * `external_deps` — stdlib and third-party packages (`os`, `requests`, …)
@@ -259,8 +276,6 @@ PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
 PYTHONPATH=. pytest tests/algorithms/ -v         # cycle detection (8)
 ```
 
-**First time with pytest?** [docs/learn.md — Introduction to pytest](docs/learn.md#introduction-to-pytest) explains what pytest is, `-v` / `-q` output, running a single test, useful flags (`-x`, `-k`, `--tb`), fixtures, and common mistakes.
-
 | Suite | Tests | Covers |
 |-------|-------|--------|
 | **`test_parser.py`** | 11 | Import forms (parametrized), `__future__` / syntax edge cases, `mini_repo` integration |
@@ -270,7 +285,7 @@ PYTHONPATH=. pytest tests/algorithms/ -v         # cycle detection (8)
 
 **Fixture:** `tests/fixtures/mini_repo/` — shared by parser and pipeline integration tests.
 
-**More detail:** [docs/learn.md — Testing overview](docs/learn.md#testing-overview) (full catalog per test). **Roadmap milestones:** [docs/Roadmap.md](docs/Roadmap.md). **Requirements traceability:** [docs/SRS_ProjectPlan.md](docs/SRS_ProjectPlan.md#10-functional-requirements).
+**More detail:** [docs/learn.md — Cycle Detection](docs/learn.md#phase-1-week-2--cycle-detection) (how it works + full test table). [Testing overview](docs/learn.md#testing-overview) (all suites).
 
 ---
 

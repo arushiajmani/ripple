@@ -49,6 +49,7 @@
 | `PipelineResult` (`analyses` + `graph`) | Yes |
 | CLI: `python -m app.pipeline <repo-path>` | Yes |
 | Unit tests in `tests/test_pipeline.py` | Yes (9 cases) |
+| Wire `CycleDetector` into pipeline | No |
 
 ---
 
@@ -71,8 +72,10 @@ GraphBuilder              ←  file-level import graph (V1)
         ▼
 GraphResult               ←  nodes + edges today; scores later
         │
+        ├──► CycleDetector (shipped)  →  CircularDependencyResult
+        │         not yet in AnalysisPipeline
         ▼
-AlgorithmEngine (planned) →  PageRank, cycles, criticality
+AlgorithmEngine (planned) →  PageRank, betweenness, criticality
         │
         ▼
 PostgreSQL / JSON / API / React
@@ -163,9 +166,9 @@ Each builder is a **pure function** over the same `FileAnalysis` dict. Repositor
 | **Impact analysis** | File graph + traversal | "What breaks if I change file X?" |
 | **Enriched file nodes** | `line_count`, class/function counts | Size and complexity in the UI |
 | **Library analytics** | `external_deps` per file | Most-used libraries; files depending on `requests` or `numpy` |
-| **Graph algorithms** | `GraphResult` → NetworkX | PageRank, betweenness, cycle detection, criticality scores |
+| **Graph algorithms** | `GraphResult` → NetworkX | PageRank, betweenness, criticality scores (`CycleDetector` already shipped) |
 
-V2 adds **new builders** and **AlgorithmEngine** — not a new parser.
+V2 adds **new builders** and **AlgorithmEngine** (scoring) — not a new parser. Cycle detection is V1-ready as a standalone unit.
 
 ### V3 — AI-assisted insights
 
@@ -416,8 +419,8 @@ Optional constructor args (for graph building):
 | Mode | How | `resolved_deps` |
 |------|-----|-----------------|
 | CLI single file | `python -m app.parser.cli file.py` | `[]` |
-| CLI repo | `python -m app.parser.cli path/to/repo` | internal paths per file |
-| Python API | `parse_repository(root)` | same as CLI repo |
+| CLI project | `python -m app.parser.cli path/to/project` | internal paths per file (if root is correct) |
+| Python API | `parse_repository(root)` | same as CLI project |
 | Manual | `ASTParser(project_files=…)` + loop | same |
 
 ---
@@ -427,7 +430,7 @@ Optional constructor args (for graph building):
 Walks a directory, skips `SKIP_DIRS` (`.git`, `venv`, `__pycache__`, …), builds `project_files`, parses every `.py` file, returns:
 
 ```python
-dict[str, FileAnalysis]  # keys are paths relative to repo root
+dict[str, FileAnalysis]  # keys are paths relative to the root you passed
 ```
 
 ```python
@@ -438,6 +441,42 @@ auth = analyses["myapp/auth.py"]
 # auth.resolved_deps → ["myapp/models.py", "myapp/utils.py"]
 # auth.external_deps → ["os", "requests"]
 ```
+
+---
+
+### Analysis root convention
+
+**Always analyze from the project root**, not from a package subfolder.
+
+`parse_repository(root)` (and the CLI when given a directory) stores every path **relative to `root`**. Import resolution then maps module names like `app.parser.models` onto those paths:
+
+1. Exact candidates: `app/parser/models.py`, `app/parser/models/__init__.py`, …
+2. Suffix match: any path ending in `/app/parser/models.py` (when the root sits *above* the package, e.g. the ripple repo root)
+
+If you pass a **subpackage** as root, paths lose the package prefix and internal imports look external:
+
+| Command (from `backend/`) | Paths collected | `from app.parser.models` |
+|---------------------------|-----------------|--------------------------|
+| `python -m app.parser.cli .` | `app/parser/models.py`, … | → `resolved_deps` ✓ |
+| `python -m app.parser.cli ..` | `backend/app/parser/models.py`, … | → `resolved_deps` via suffix ✓ |
+| `python -m app.parser.cli ./app/parser` | `models.py`, `ast_parser.py`, … | → `external_deps: app` ✗ |
+
+The file `models.py` is on disk either way — but the matcher compares **import module strings** to **paths relative to your root**, not “same folder on disk.” `app.parser.models` does not equal `models.py`.
+
+**Why we keep it this way:** production analysis (zip upload, clone, pipeline) always runs from the **uploaded project root**. Guessing package prefixes from a subfolder would add ambiguity (multiple `models.py` files) for a case the product should not hit. Prefer the correct root over smarter path guessing.
+
+**Symptom of a wrong root:** every in-repo import shows up under `external_deps` as the top-level package (`app`), and `resolved_deps` is empty for all files.
+
+**Correct local usage:**
+
+```bash
+cd backend
+python -m app.parser.cli .                              # backend as project root
+python -m app.parser.cli tests/fixtures/mini_repo       # fixture project root
+python -m app.parser.cli tests/fixtures/mini_repo myapp/auth.py
+```
+
+Also see [README — Analysis root convention](../README.md#analysis-root-convention).
 
 ---
 
@@ -563,6 +602,8 @@ If none match exactly, **suffix match**: any `project_files` entry ending in `/m
 Returns `None` if no match → import goes to `external_deps`.
 
 **Without `project_files`:** no path guessing at all. Everything unidentified stays in `external_deps` (by top-level package name).
+
+**Root must include the package path prefix.** Paths in `project_files` are relative to the analysis root. If the root is a package subfolder, you only get bare names like `utils.py`, which never match `myapp/utils.py`. See [Analysis root convention](#analysis-root-convention).
 
 ---
 
@@ -713,9 +754,12 @@ See [Testing overview](#testing-overview) for what each suite covers. For where 
 
 ```text
 backend/app/graph/
-├── models.py      # GraphResult
-├── builder.py     # GraphBuilder
-└── algorithms.py  # AlgorithmEngine (planned)
+├── models.py              # GraphResult, CircularDependencyResult
+├── builder.py             # GraphBuilder
+└── algorithms/
+    ├── base.py            # GraphAlgorithm protocol
+    ├── digraph.py         # GraphResult → nx.DiGraph
+    └── cycles.py          # CycleDetector (shipped)
 ```
 
 ### 1. Output type (`GraphResult`)
@@ -727,7 +771,7 @@ class GraphResult:
     edges: list[tuple[str, str]]      # (importer, imported)
 ```
 
-This is the **structural** graph only — no scores yet. `AlgorithmEngine` will add PageRank, betweenness, and cycles on top.
+This is the **structural** graph only — no scores yet. `CycleDetector` reads this structure to find circular dependencies. `AlgorithmEngine` will add PageRank, betweenness, and criticality later.
 
 ### 2. Input and API
 
@@ -788,11 +832,11 @@ for dep in analysis.resolved_deps:
 
 **Duplicate deps deduplicated.** If the parser lists the same `resolved_deps` path twice (multiple imports of one module), only one edge is kept.
 
-**Cycles and self-loops are preserved, not rejected.** A→B→C→A or a file importing itself becomes an edge. Cycle *detection* is `AlgorithmEngine`'s job; the builder just records structure.
+**Cycles and self-loops are preserved, not rejected.** A→B→C→A or a file importing itself becomes an edge. Cycle *detection* is `CycleDetector`'s job; the builder just records structure.
 
 **Syntax-error files still participate.** A file with `has_syntax_error=True` is still a node if it's in the dict. Any `resolved_deps` the parser extracted before failing still become edges.
 
-**No NetworkX yet.** `GraphResult` is plain lists. `AlgorithmEngine` can build an `nx.DiGraph` from nodes/edges when scoring — avoids storing the graph twice until needed.
+**`GraphResult` stays plain lists.** NetworkX is used only when an algorithm needs it (`graph_result_to_digraph` in `CycleDetector`). That avoids storing the graph twice until needed.
 
 ### 6. End-to-end flow (parser → graph)
 
@@ -813,7 +857,7 @@ GraphResult { nodes, edges }
 
 **9 unit tests** in `test_graph.py` — synthetic `FileAnalysis` dicts via `make_file()`, no filesystem, no parser. Full test list: [Testing overview — Graph builder tests](#graph-builder-tests-test_graphpy--full-list).
 
-Deliberately **not** tested here: import resolution (`test_parser.py`), end-to-end pipeline (`test_pipeline.py`), NetworkX algorithms.
+Deliberately **not** tested here: import resolution (`test_parser.py`), end-to-end pipeline (`test_pipeline.py`), cycle detection (`test_cycles.py`).
 
 ### 8. Try it yourself
 
@@ -826,6 +870,171 @@ result = GraphBuilder().build(analyses)
 
 for source, target in result.edges:
     print(f"{source} imports {target}")
+```
+
+---
+
+## Phase 1, Week 2 — Cycle Detection
+
+**Goal:** Given a file import graph (`GraphResult`), find every circular dependency and report each loop once in a stable form.
+
+**Files to read in order:**
+
+1. `backend/app/graph/models.py` — `CircularDependencyResult`
+2. `backend/app/graph/algorithms/digraph.py` — `graph_result_to_digraph`
+3. `backend/app/graph/algorithms/cycles.py` — `normalize_cycle`, `CycleDetector`
+4. `backend/tests/algorithms/test_cycles.py` — 8 unit tests
+
+```text
+backend/app/graph/algorithms/
+├── base.py       # GraphAlgorithm protocol (run(graph) → T)
+├── digraph.py    # GraphResult → nx.DiGraph
+└── cycles.py     # CycleDetector
+```
+
+**Status:** Implemented and unit-tested. **Not** wired into `AnalysisPipeline` yet — call it yourself on a `GraphResult`.
+
+### 1. Output type (`CircularDependencyResult`)
+
+```python
+@dataclass
+class CircularDependencyResult:
+    cycles: list[list[str]]   # each cycle is an ordered list of file paths
+
+    @property
+    def has_cycles(self) -> bool: ...
+
+    @property
+    def cycle_count(self) -> int: ...
+```
+
+Example: `[["myapp/a.py", "myapp/b.py", "myapp/c.py"]]` means A imports B, B imports C, C imports A.
+
+### 2. API
+
+```python
+from app.graph import CycleDetector, GraphBuilder
+from app.parser.repository import parse_repository
+
+analyses = parse_repository("tests/fixtures/mini_repo")
+graph = GraphBuilder().build(analyses)
+result = CycleDetector().detect(graph)   # or .run(graph) — same method
+
+# result.cycles, result.has_cycles, result.cycle_count
+```
+
+| Input | Type | Notes |
+|-------|------|-------|
+| `graph` | `GraphResult` | Nodes + directed edges only — no parser, no filesystem |
+
+`detect` is an alias of `run` (`detect = run` on the class).
+
+### 3. How detection works
+
+```
+GraphResult { nodes, edges }
+        │
+        ▼
+graph_result_to_digraph()     # plain lists → nx.DiGraph
+        │
+        ▼
+nx.simple_cycles(digraph)     # every simple cycle (may include rotations)
+        │
+        ▼
+normalize_cycle(cycle)        # rotate to lex-smallest start node
+        │
+        ▼
+dedupe via set[tuple]         # same loop once
+        │
+        ▼
+sort by (length, path)        # stable output for tests / UI
+        │
+        ▼
+CircularDependencyResult
+```
+
+**NetworkX `simple_cycles`:** finds directed cycles that do not repeat nodes (except start/end). For A↔B it may yield both `[A, B]` and `[B, A]` — those are the **same** loop starting at different nodes.
+
+### 4. Why `normalize_cycle` exists
+
+```python
+def normalize_cycle(cycle: list[str]) -> tuple[str, ...]:
+    start = cycle.index(min(cycle))
+    rotated = cycle[start:] + cycle[:start]
+    return tuple(rotated)
+```
+
+| Input rotation | After normalize |
+|----------------|-----------------|
+| `["b.py", "c.py", "a.py"]` | `("a.py", "b.py", "c.py")` |
+| `["a.py", "b.py", "c.py"]` | `("a.py", "b.py", "c.py")` |
+| `["c.py", "a.py", "b.py"]` | `("a.py", "b.py", "c.py")` |
+
+Returns a **tuple** so it can live in a `set` for deduplication (lists are not hashable).
+
+Without this, the UI and tests would see the same circular dependency multiple times.
+
+### 5. Design choices
+
+**Operates on `GraphResult` only.** No re-parsing. Graph builder preserves cycles as edges; this layer *labels* them.
+
+**Self-loops count.** A file that imports itself (`auth.py` → `auth.py`) is a one-node cycle.
+
+**Deterministic order.** Cycles are sorted by length, then by path list, so output is stable across runs.
+
+**Not in the pipeline yet.** `AnalysisPipeline` still returns only `analyses` + `graph`. Wiring `CycleDetector` is the next integration step (attach cycles to `PipelineResult` / CLI / API).
+
+### 6. Test cases (`test_cycles.py`)
+
+**8 unit tests** — synthetic graphs only (no parser, no disk). Most use the `build_graph` fixture (`GraphBuilder` + `make_file`); normalization tests build `GraphResult` by hand.
+
+Run from `backend/`:
+
+```bash
+PYTHONPATH=. pytest tests/algorithms/test_cycles.py -v
+```
+
+| Test | What it proves |
+|------|----------------|
+| `test_empty_graph_has_no_cycles` | Empty `GraphResult` → `cycles == []`, `has_cycles` false, `cycle_count == 0` |
+| `test_acyclic_repository_has_no_cycles` | Tree-shaped imports (auth → utils/models) → no cycles |
+| `test_simple_three_node_cycle` | A→B→C→A detected; path starts at lex-smallest node (`a.py`) |
+| `test_self_loop_is_a_cycle` | File importing itself → `[["myapp/auth.py"]]` |
+| `test_two_disjoint_cycles` | Independent A↔B and X↔Y both reported (`cycle_count == 2`) |
+| `test_cycle_normalized_to_lexicographic_start` | Node list order does not change the reported start node |
+| `test_detect_deduplicates_rotations` | A→B→A is **one** cycle, not two rotations |
+| `test_run_matches_detect` | `run()` and `detect()` return the same result (alias) |
+
+**What these tests deliberately skip:** pipeline wiring, API/JSON output, frontend cycle warnings, PageRank/scoring.
+
+Also listed under [Testing overview — Cycle detection tests](#cycle-detection-tests-test_cyclespy--full-list).
+
+### 7. Try it yourself
+
+```python
+from app.graph import CycleDetector, GraphBuilder, GraphResult
+
+# Hand-built cycle: a → b → c → a
+graph = GraphResult(
+    nodes=["myapp/a.py", "myapp/b.py", "myapp/c.py"],
+    edges=[
+        ("myapp/a.py", "myapp/b.py"),
+        ("myapp/b.py", "myapp/c.py"),
+        ("myapp/c.py", "myapp/a.py"),
+    ],
+)
+print(CycleDetector().detect(graph).cycles)
+# [['myapp/a.py', 'myapp/b.py', 'myapp/c.py']]
+```
+
+Or on a real project root (see [Analysis root convention](#analysis-root-convention)):
+
+```python
+from app.graph import CycleDetector, GraphBuilder
+from app.parser.repository import parse_repository
+
+graph = GraphBuilder().build(parse_repository("."))
+print(CycleDetector().detect(graph))
 ```
 
 ---
@@ -965,16 +1174,6 @@ The `::` syntax is **file path :: function name** (and optionally `[param_id]` f
 | `-q` | Quiet — fewer lines |
 | `-x` | Stop on the **first** failure (don't run the rest) |
 | `-s` | Show `print()` output (pytest normally captures it) |
-| `--tb=short` | Shorter tracebacks (default is reasonably short) |
-| `--tb=long` | Full traceback — good for deep debugging |
-| `--tb=no` | No traceback — only the failure summary |
-| `-vv` | Extra verbose (more detail on assertions) |
-
-Example while fixing a bug:
-
-```bash
-PYTHONPATH=. pytest tests/test_parser.py::test_syntax_error_returns_flag_without_raising -vv --tb=long
-```
 
 ### Exit codes
 
@@ -1085,6 +1284,8 @@ Uses `make_file()` helper for realistic `FileAnalysis` fixtures without touching
 
 ### Cycle detection tests (`test_cycles.py`) — full list
 
+**Study guide (how `CycleDetector` / `normalize_cycle` work):** [Phase 1, Week 2 — Cycle Detection](#phase-1-week-2--cycle-detection).
+
 | Test | What it proves |
 |------|----------------|
 | `test_empty_graph_has_no_cycles` | Empty `GraphResult` → no cycles |
@@ -1096,7 +1297,7 @@ Uses `make_file()` helper for realistic `FileAnalysis` fixtures without touching
 | `test_detect_deduplicates_rotations` | Same cycle not reported twice |
 | `test_run_matches_detect` | `run()` alias equals `detect()` |
 
-Run only cycle tests: `PYTHONPATH=. pytest tests/algorithms/ -v`
+Synthetic `GraphResult` only — no parser, no filesystem, no pipeline. Run only cycle tests: `PYTHONPATH=. pytest tests/algorithms/ -v`
 
 ### Not covered yet
 
@@ -1117,11 +1318,12 @@ Read [Roadmap.md](./Roadmap.md) for week-by-week tasks. Short preview:
 
 | Component | What it will do |
 |-----------|-----------------|
-| `AlgorithmEngine` | PageRank, betweenness, cycle detection, criticality score |
+| Wire `CycleDetector` into `AnalysisPipeline` | Attach `CircularDependencyResult` to pipeline output / CLI |
+| `AlgorithmEngine` | PageRank, betweenness, criticality score |
 | `IngestionService` | Unzip repo, walk tree, filter `venv/` / `__pycache__` |
 | REST API + Postgres | Persist results, async jobs, graph/impact endpoints |
 
-`AnalysisPipeline` (parser → graph) is **shipped**. See [Future Scope](#future-scope) for V2/V3 capabilities.
+`AnalysisPipeline` (parser → graph) and `CycleDetector` (standalone) are **shipped**. See [Future Scope](#future-scope) for V2/V3 capabilities.
 
 ---
 
@@ -1131,9 +1333,9 @@ Read [Roadmap.md](./Roadmap.md) for week-by-week tasks. Short preview:
 |---------|----------|
 | `fastapi` + `uvicorn` | HTTP API |
 | `sqlalchemy` + `psycopg2` | Postgres ORM |
-| `networkx` | Graph algorithms (`AlgorithmEngine`, planned) |
+| `networkx` | `CycleDetector` (`nx.simple_cycles`); PageRank/betweenness planned |
 | `pytest` + `httpx` | Backend tests — see [Introduction to pytest](#introduction-to-pytest) |
 
 ---
 
-*Add a new major section here each time a component ships (GraphBuilder, AlgorithmEngine, …).*
+*Add a new major section here each time a component ships (GraphBuilder, CycleDetector, AlgorithmEngine, …).*

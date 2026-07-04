@@ -157,12 +157,9 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 
 **37 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
 
-- **pytest primer (verbose mode, flags, fixtures):** [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest)
 - **Quick commands:** [README — Tests](../README.md#tests)
 - **Full catalog (every test name):** [learn.md — Testing overview](./learn.md#testing-overview)
 - **Milestone gates:** [Roadmap](./Roadmap.md) (Week 1–2 milestone checks)
-- **Requirements mapping:** [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements)
-
 ---
 
 ## 3. Component Map
@@ -399,6 +396,8 @@ GraphResult               nodes + edges
 2. **File import graphs only require `resolved_deps`** — edges are cross-file import relationships; internal structure and third-party packages are different graph types.
 3. **Unused fields are kept** — avoids reparsing and breaking CLI/tests when V2 builders arrive.
 4. **Future builders share the same `dict[str, FileAnalysis]`** — parse once, run `GraphBuilder`, `ClassGraphBuilder`, etc.
+5. **Analysis always runs from the project root** — `parse_repository(root)` indexes paths relative to `root`. Import resolution maps package names (`app.parser.models`) to those paths (exact + suffix). Pointing at a package subfolder (e.g. `app/parser/`) yields bare names like `models.py`, so in-repo imports are misclassified as `external_deps`. Production (zip/clone) uses the uploaded project root; the CLI must do the same. Detail: [learn.md — Analysis root convention](./learn.md#analysis-root-convention).
+6. **`CycleDetector` is a separate algorithm unit** — reads `GraphResult`, uses NetworkX `simple_cycles`, normalizes rotations, returns `CircularDependencyResult`. Shipped and unit-tested (`tests/algorithms/test_cycles.py`, 8 cases); not yet wired into `AnalysisPipeline`. Detail: [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection).
 
 ### Future scope
 

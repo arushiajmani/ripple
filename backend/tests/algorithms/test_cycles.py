@@ -1,3 +1,14 @@
+"""CycleDetector unit tests.
+
+Synthetic GraphResult graphs only — no parser, no filesystem, no pipeline.
+Uses build_graph fixture (GraphBuilder) or hand-built GraphResult for edge cases.
+
+Run from backend/:
+    PYTHONPATH=. pytest tests/algorithms/test_cycles.py -v
+
+pytest primer: docs/learn.md#introduction-to-pytest
+"""
+
 from __future__ import annotations
 
 from typing import Callable
@@ -7,6 +18,8 @@ from app.parser.models import FileAnalysis
 
 from tests.algorithms.helpers import make_file
 
+
+# --- Empty / acyclic graphs ---
 
 def test_empty_graph_has_no_cycles() -> None:
     graph = GraphResult(nodes=[], edges=[])
@@ -21,6 +34,7 @@ def test_empty_graph_has_no_cycles() -> None:
 def test_acyclic_repository_has_no_cycles(
     build_graph: Callable[[dict[str, FileAnalysis]], GraphResult],
 ) -> None:
+    """Tree-shaped imports (auth → utils/models) — no circular dependency."""
     graph = build_graph(
         {
             "myapp/models.py": make_file("myapp/models.py"),
@@ -41,9 +55,12 @@ def test_acyclic_repository_has_no_cycles(
     assert not result.has_cycles
 
 
+# --- Simple cycles and self-loops ---
+
 def test_simple_three_node_cycle(
     build_graph: Callable[[dict[str, FileAnalysis]], GraphResult],
 ) -> None:
+    """A → B → C → A; reported starting at lex-smallest node (a.py)."""
     graph = build_graph(
         {
             "myapp/a.py": make_file("myapp/a.py", resolved_deps=["myapp/b.py"]),
@@ -62,6 +79,7 @@ def test_simple_three_node_cycle(
 def test_self_loop_is_a_cycle(
     build_graph: Callable[[dict[str, FileAnalysis]], GraphResult],
 ) -> None:
+    """File that imports itself is a one-node cycle."""
     graph = build_graph(
         {
             "myapp/auth.py": make_file(
@@ -80,6 +98,7 @@ def test_self_loop_is_a_cycle(
 def test_two_disjoint_cycles(
     build_graph: Callable[[dict[str, FileAnalysis]], GraphResult],
 ) -> None:
+    """Independent A↔B and X↔Y cycles both reported."""
     graph = build_graph(
         {
             "myapp/a.py": make_file("myapp/a.py", resolved_deps=["myapp/b.py"]),
@@ -96,7 +115,10 @@ def test_two_disjoint_cycles(
     assert ["myapp/x.py", "myapp/y.py"] in result.cycles
 
 
+# --- Normalization and API aliases ---
+
 def test_cycle_normalized_to_lexicographic_start() -> None:
+    """Regardless of node list order, cycle path starts at a.py."""
     graph = GraphResult(
         nodes=["myapp/b.py", "myapp/c.py", "myapp/a.py"],
         edges=[
@@ -112,6 +134,7 @@ def test_cycle_normalized_to_lexicographic_start() -> None:
 
 
 def test_detect_deduplicates_rotations() -> None:
+    """A→B→A is one cycle, not two (starting at A vs starting at B)."""
     graph = GraphResult(
         nodes=["myapp/a.py", "myapp/b.py"],
         edges=[("myapp/a.py", "myapp/b.py"), ("myapp/b.py", "myapp/a.py")],
@@ -124,6 +147,7 @@ def test_detect_deduplicates_rotations() -> None:
 
 
 def test_run_matches_detect() -> None:
+    """run() and detect() are the same method (alias)."""
     graph = GraphResult(
         nodes=["myapp/a.py", "myapp/b.py"],
         edges=[("myapp/a.py", "myapp/b.py"), ("myapp/b.py", "myapp/a.py")],

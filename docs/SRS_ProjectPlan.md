@@ -41,11 +41,13 @@ Ripple solves this by statically analyzing a Python repository, constructing a d
 Ripple is a developer tool that transforms a Python repository into an interactive dependency graph, ranked by architectural criticality, with one-click impact analysis.
 
 **It is not:**
+
 - A code quality linter (that's SonarQube)
 - A code search engine (that's Sourcegraph)
 - A code chatbot (that's GitHub Copilot)
 
 **It is:**
+
 - A graph-theoretic architectural intelligence tool
 - Focused on structure, not style
 - Built on CS fundamentals: graph algorithms, static analysis, AST parsing
@@ -56,27 +58,31 @@ Ripple is a developer tool that transforms a Python repository into an interacti
 
 ### In Scope — MVP
 
-| Feature | Description |
-|---|---|
-| GitHub repo ingestion | Clone any public Python repo by URL |
-| Python AST parsing | Extract files, classes, functions, imports |
-| Dependency graph construction | Build directed graph of module dependencies |
-| Criticality scoring | Rank files using PageRank and Betweenness Centrality |
-| Circular dependency detection | Identify strongly connected components |
-| Impact analysis | Click a node → see all files that depend on it |
-| Interactive graph visualization | Force-directed, zoomable, clickable graph |
-| Critical files sidebar | Top 10 most critical files ranked with scores |
+
+| Feature                         | Description                                          |
+| ------------------------------- | ---------------------------------------------------- |
+| GitHub repo ingestion           | Clone any public Python repo by URL                  |
+| Python AST parsing              | Extract files, classes, functions, imports           |
+| Dependency graph construction   | Build directed graph of module dependencies          |
+| Criticality scoring             | Rank files using PageRank and Betweenness Centrality |
+| Circular dependency detection   | Identify strongly connected components               |
+| Impact analysis                 | Click a node → see all files that depend on it       |
+| Interactive graph visualization | Force-directed, zoomable, clickable graph            |
+| Critical files sidebar          | Top 10 most critical files ranked with scores        |
+
 
 ### Out of Scope — MVP (Deferred to v2/v3)
 
-| Feature | Reason Deferred |
-|---|---|
-| AI/LLM chat interface | Adds complexity before graph is validated |
-| Git history analysis | Separate data source, separate pipeline |
-| Multi-language support | Each language is a separate parser effort |
-| User authentication | Unnecessary for a portfolio demo |
+
+| Feature                    | Reason Deferred                                    |
+| -------------------------- | -------------------------------------------------- |
+| AI/LLM chat interface      | Adds complexity before graph is validated          |
+| Git history analysis       | Separate data source, separate pipeline            |
+| Multi-language support     | Each language is a separate parser effort          |
+| User authentication        | Unnecessary for a portfolio demo                   |
 | Function-level graph nodes | File-level is sufficient and significantly simpler |
-| Private repository support | Requires OAuth, deferred to v2 |
+| Private repository support | Requires OAuth, deferred to v2                     |
+
 
 ---
 
@@ -138,6 +144,7 @@ docker-compose.yml
 ```
 
 Docker is included because:
+
 1. It makes setup a single command (`docker-compose up`) for anyone reviewing your portfolio
 2. It isolates the Python environment and database cleanly
 3. It's expected in professional environments and shows deployment awareness
@@ -153,6 +160,7 @@ Docker is included because:
 
 **Key Design Decision — Where to clone?**
 Options:
+
 - Clone to disk (temp directory) → simple, fast, easy to read files
 - Clone to memory → complex, unnecessary
 
@@ -302,6 +310,7 @@ Timings are exposed via `GET /api/status/{repo_id}` (`metrics` array when comple
 
 **Why FastAPI over Django?**
 Django is a full web framework designed for building websites with templates, admin panels, ORM-based models, and session management. Ripple needs none of that. It needs a fast, clean API. FastAPI gives you:
+
 - Automatic OpenAPI/Swagger documentation at `/docs`
 - Pydantic models for request/response validation
 - Async support for handling long-running analysis jobs
@@ -411,6 +420,7 @@ This is the **async job pattern** used by every real system that processes long-
 
 **Why PostgreSQL?**
 You need persistence so you don't re-analyze the same repo on every page refresh. PostgreSQL gives you:
+
 - ACID transactions (analysis results are consistent)
 - JSON column support (store graph data flexibly)
 - A real database on your resume
@@ -418,6 +428,7 @@ You need persistence so you don't re-analyze the same repo on every page refresh
 
 **Why not Neo4j?**
 Neo4j is a graph database. It would make graph traversal queries elegant (using Cypher). However:
+
 - It adds another service to run and maintain
 - NetworkX already handles all your algorithm needs in Python
 - Explaining Neo4j in an interview requires knowing Cypher, graph database internals, and why you need a dedicated graph store
@@ -477,6 +488,7 @@ CREATE TABLE cycles (
 ```
 
 **Index Strategy:**
+
 ```sql
 -- Speed up all queries that filter by repo
 CREATE INDEX idx_files_repo_id ON files(repo_id);
@@ -543,6 +555,7 @@ GET    /api/repos
 ```
 
 **Benchmark CLI (no HTTP):**
+
 ```bash
 python -m app.benchmark --repo path/to/project
 ```
@@ -574,6 +587,7 @@ App
 ### Visual Design Rules
 
 **Node color encoding:**
+
 ```
 criticality_score > 0.7   →  Red    (high risk)
 criticality_score > 0.4   →  Orange (medium risk)
@@ -581,12 +595,15 @@ criticality_score > 0.0   →  Green  (low risk)
 ```
 
 **Node size encoding:**
+
 ```
 size = base_size + (pagerank_score * scale_factor)
 ```
+
 Larger nodes are more structurally important. This creates a visual hierarchy without needing labels on every node.
 
 **On node click:**
+
 - Clicked node: highlighted border
 - Direct dependents (files that import it): orange highlight
 - Transitive dependents (all affected files): light red highlight
@@ -598,65 +615,75 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 
 ## 10. Functional Requirements
 
-| ID | Requirement | Priority |
-|---|---|---|
-| FR-01 | System accepts a valid public GitHub URL | Must Have |
-| FR-02 | System clones and indexes all .py files | Must Have |
-| FR-03 | System parses imports and builds dependency graph | Must Have |
-| FR-04 | System computes PageRank scores for all nodes | Must Have |
-| FR-05 | System computes Betweenness Centrality for all nodes | Must Have |
-| FR-06 | System detects circular dependencies | Must Have |
-| FR-07 | System returns graph as JSON via REST API | Must Have |
-| FR-08 | Frontend renders interactive force-directed graph | Must Have |
-| FR-09 | User can click a node to see impact analysis | Must Have |
-| FR-10 | Sidebar shows top 10 critical files ranked | Must Have |
-| FR-11 | Previously analyzed repos are cached | Should Have |
-| FR-12 | Circular dependencies are visually highlighted | Should Have |
-| FR-13 | Pipeline stage metrics exposed via status API when analysis completes | Must Have |
-| FR-14 | Benchmark CLI prints formatted per-stage timing breakdown | Should Have |
-| FR-15 | User can search/filter nodes by file name | Nice to Have |
-| FR-16 | User can export graph as PNG or JSON | Nice to Have |
+
+| ID    | Requirement                                                           | Priority     |
+| ----- | --------------------------------------------------------------------- | ------------ |
+| FR-01 | System accepts a valid public GitHub URL                              | Must Have    |
+| FR-02 | System clones and indexes all .py files                               | Must Have    |
+| FR-03 | System parses imports and builds dependency graph                     | Must Have    |
+| FR-04 | System computes PageRank scores for all nodes                         | Must Have    |
+| FR-05 | System computes Betweenness Centrality for all nodes                  | Must Have    |
+| FR-06 | System detects circular dependencies                                  | Must Have    |
+| FR-07 | System returns graph as JSON via REST API                             | Must Have    |
+| FR-08 | Frontend renders interactive force-directed graph                     | Must Have    |
+| FR-09 | User can click a node to see impact analysis                          | Must Have    |
+| FR-10 | Sidebar shows top 10 critical files ranked                            | Must Have    |
+| FR-11 | Previously analyzed repos are cached                                  | Should Have  |
+| FR-12 | Circular dependencies are visually highlighted                        | Should Have  |
+| FR-13 | Pipeline stage metrics exposed via status API when analysis completes | Must Have    |
+| FR-14 | Benchmark CLI prints formatted per-stage timing breakdown             | Should Have  |
+| FR-15 | User can search/filter nodes by file name                             | Nice to Have |
+| FR-16 | User can export graph as PNG or JSON                                  | Nice to Have |
+
 
 ---
 
 ## 11. Non-Functional Requirements
 
-| Category | Requirement |
-|---|---|
-| Performance | Analysis of a repo with <500 Python files completes in under 60 seconds |
-| Accuracy | Parser correctly handles standard Python import patterns (absolute, relative, from-import) |
-| Usability | Interactive graph loads and is usable within 3 seconds of analysis completing |
-| Reliability | Failed analysis jobs surface a clear error message to the user |
-| Portability | Entire system runs locally with a single `docker-compose up` command |
-| Observability | Per-stage pipeline metrics recorded; benchmark CLI available for performance testing |
-| Code Quality | Each component (parser, graph engine, API) has unit tests with >70% coverage |
+
+| Category      | Requirement                                                                                |
+| ------------- | ------------------------------------------------------------------------------------------ |
+| Performance   | Analysis of a repo with <500 Python files completes in under 60 seconds                    |
+| Accuracy      | Parser correctly handles standard Python import patterns (absolute, relative, from-import) |
+| Usability     | Interactive graph loads and is usable within 3 seconds of analysis completing              |
+| Reliability   | Failed analysis jobs surface a clear error message to the user                             |
+| Portability   | Entire system runs locally with a single `docker-compose up` command                       |
+| Observability | Per-stage pipeline metrics recorded; benchmark CLI available for performance testing       |
+| Code Quality  | Each component (parser, graph engine, API) has unit tests with >70% coverage               |
+
 
 ### Verification (how to test requirements)
 
 Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**37 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests).
 
-| Requirement | Status | Verified by |
-|-------------|--------|-------------|
-| FR-02 Index `.py` files | Partial | `test_collect_python_files_skips_cache_dirs`, `test_parse_repository_mini_repo` |
-| FR-03 Parse imports + dependency graph | Partial | `test_parser.py` (11), `test_graph.py` (9), `test_pipeline.py` (9) |
-| FR-04 PageRank | Not implemented | — |
-| FR-05 Betweenness | Not implemented | — |
-| FR-06 Circular dependencies | Partial | `test_cycles.py` (8); not yet in `AnalysisPipeline` |
-| FR-07 REST API | Not implemented | `test_api.py` stub |
-| FR-13 Pipeline metrics | Not implemented | — |
-| FR-14 Benchmark CLI | Not implemented | — |
+
+| Requirement                            | Status          | Verified by                                                                     |
+| -------------------------------------- | --------------- | ------------------------------------------------------------------------------- |
+| FR-02 Index `.py` files                | Partial         | `test_collect_python_files_skips_cache_dirs`, `test_parse_repository_mini_repo` |
+| FR-03 Parse imports + dependency graph | Partial         | `test_parser.py` (11), `test_graph.py` (9), `test_pipeline.py` (9)              |
+| FR-04 PageRank                         | Not implemented | —                                                                               |
+| FR-05 Betweenness                      | Not implemented | —                                                                               |
+| FR-06 Circular dependencies            | Partial         | `test_cycles.py` (8); not yet in `AnalysisPipeline` — [learn.md](./learn.md#phase-1-week-2--cycle-detection) |
+| FR-07 REST API                         | Not implemented | `test_api.py` stub                                                              |
+| FR-13 Pipeline metrics                 | Not implemented | —                                                                               |
+| FR-14 Benchmark CLI                    | Not implemented | —                                                                               |
+
 
 **Parser milestone (Week 1):** `PYTHONPATH=. pytest tests/test_parser.py -v`  
 **Graph + cycles (Week 2):** `PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ -v`
+
+**Manual CLI check (FR-03):** run from `backend/` with the **project root**, e.g. `python -m app.parser.cli .` or `python -m app.parser.cli tests/fixtures/mini_repo`. Do not pass a package subfolder (`./app/parser`) — internal imports will be misclassified as external. See [learn.md — Analysis root convention](./learn.md#analysis-root-convention).
 
 ---
 
 ## 12. Project Plan & Milestones
 
 ### Phase 1 — Analysis Engine (Weeks 1–3)
+
 *Goal: Pure Python. No web server. No frontend. Prove the analysis works.*
 
 **Week 1: Parser**
+
 - [x] Set up project structure and Git repo
 - [x] Implement `ASTParser` — parse a single `.py` file and extract imports
 - [x] Handle absolute imports (`import os`), from-imports (`from os import path`), and aliased imports (`import numpy as np`)
@@ -664,6 +691,7 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**37 tes
 - [x] Milestone: `python -m app.parser.cli path/to/file.py` prints all imports correctly
 
 **Week 2: Graph Builder + Algorithms**
+
 - [x] Implement `GraphBuilder` — assemble parsed files into a dependency graph (`GraphResult`)
 - [ ] Implement PageRank computation
 - [ ] Implement Betweenness Centrality computation
@@ -672,6 +700,7 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**37 tes
 - [ ] Milestone: `python analyze.py path/to/repo/` prints top 10 critical files and any cycles
 
 **Week 3: Ingestion + Integration**
+
 - [ ] Implement `IngestionService` — clone a GitHub repo to temp directory
 - [x] Walk repo and parse all `.py` files — `parse_repository()` (directory path, not zip)
 - [x] Wire parse → graph in `AnalysisPipeline`
@@ -686,16 +715,20 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**37 tes
 ---
 
 ### Phase 2 — API Layer (Weeks 4–5)
+
 *Goal: Wrap the analysis engine in FastAPI. Enable async job processing.*
 
 **Week 4: FastAPI Setup + Database**
+
 - [x] Set up FastAPI project, Docker Compose (FastAPI + PostgreSQL) — health endpoint only
+
 - Implement PostgreSQL schema (migrations via Alembic)
 - Implement `POST /api/analyze` — accepts URL, starts background job, returns repo_id
 - Implement `GET /api/status/{repo_id}` — returns job status and `metrics[]` when complete
 - Milestone: Can submit a URL via curl and poll for completion with stage timings
 
 **Week 5: Graph + Impact Endpoints**
+
 - Implement `GET /api/graph/{repo_id}` — returns full graph JSON
 - Implement `GET /api/impact/{repo_id}?file=...` — returns impact analysis
 - Implement `GET /api/repos` — returns history
@@ -705,22 +738,27 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**37 tes
 ---
 
 ### Phase 3 — Frontend (Weeks 6–8)
+
 *Goal: Build the React + Cytoscape.js interface. Make it demo-ready.*
 
 **Week 6: Graph Visualization**
+
 - [x] Set up React project (Vite)
+
 - Integrate Cytoscape.js
 - Render nodes and edges from API response
 - Apply color and size encoding based on criticality scores
 - Milestone: Graph renders correctly for a real repo
 
 **Week 7: Interactivity + Sidebar**
+
 - Implement node click → impact analysis API call → highlight affected nodes
 - Build sidebar: critical files list, node detail panel, cycle warnings
 - Add loading state + error handling
 - Milestone: Full interaction flow works end to end
 
 **Week 8: Polish + Documentation**
+
 - [ ] Add URL input form on homepage
 - [ ] Add recent analyses list
 - [x] Write README with architecture explanation, screenshots, and setup instructions — architecture and setup done; screenshots pending
@@ -733,17 +771,22 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**37 tes
 ## 13. Version Ladder
 
 ### MVP (What's Described Above)
+
 Graph visualization + impact analysis + criticality ranking for Python repos.
 **Resume claim:** "Built a static analysis tool that models Python repositories as directed dependency graphs and applies PageRank and Betweenness Centrality to identify architecturally critical files and compute change impact."
 
 ### v2 — AI Layer (3–4 weeks after MVP)
+
 Add graph-context RAG:
+
 - When user asks "explain the authentication flow," run graph traversal to find auth-related nodes, retrieve their source code, pass structured graph context + code to an LLM
 - Key claim: **LLM responses are grounded in graph traversal, not raw code retrieval**
 - This is what separates it from "just another code chatbot"
 
 ### v3 — Stretch Goal: Behavioral Coupling (Research-Adjacent)
+
 Analyze git history to find files that frequently change together (co-change coupling). Compare structural coupling (from the dependency graph) with behavioral coupling (from git history). Files with high behavioral coupling but low structural coupling are hidden dependencies — a genuinely novel insight.
+
 - Requires: `gitpython`, co-occurrence matrix computation, new graph edge type
 - **This makes the project research-adjacent and gives you the strongest possible interview story**
 
@@ -754,22 +797,26 @@ Analyze git history to find files that frequently change together (co-change cou
 These are the questions you should be able to answer confidently after building this project.
 
 **On architecture:**
+
 - "Why a modular monolith instead of microservices?"
 - "Why PostgreSQL instead of Neo4j for a graph project?"
 - "How does your async job processing work?"
 
 **On algorithms:**
+
 - "Explain how PageRank works and why it applies to code."
 - "What's the difference between Betweenness Centrality and PageRank? When would each be more useful?"
 - "How do you detect circular dependencies? What algorithm?"
 - "What's a strongly connected component and why does it matter for code?"
 
 **On system design:**
+
 - "How would you scale this to handle 100 concurrent analysis requests?"
 - "How would you handle a 10,000-file monorepo? Would your algorithm choices change?"
 - "What's the tradeoff between file-level and function-level graph nodes?"
 
 **On static analysis:**
+
 - "What are the limits of static analysis? What can't your parser detect?"
 - "How does Python's dynamic nature (getattr, importlib) affect your accuracy?"
 - "Why did you choose the ast module over Tree-sitter?"
