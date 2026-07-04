@@ -174,6 +174,10 @@ def test_parse_repository_mini_repo() -> None:
     assert utils.resolved_deps == ["myapp/models.py"]
     assert utils.external_deps == ["json"]
 
+    # models ↔ utils cycle (fixture is intentionally cyclic)
+    models = analyses["myapp/models.py"]
+    assert models.resolved_deps == ["myapp/utils.py"]
+
 
 # --- Suffix resolution on real repo layout (ripple itself) ---
 

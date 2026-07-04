@@ -663,14 +663,14 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**37 tes
 | FR-03 Parse imports + dependency graph | Partial         | `test_parser.py` (11), `test_graph.py` (9), `test_pipeline.py` (9)              |
 | FR-04 PageRank                         | Not implemented | —                                                                               |
 | FR-05 Betweenness                      | Not implemented | —                                                                               |
-| FR-06 Circular dependencies            | Partial         | `test_cycles.py` (8); not yet in `AnalysisPipeline` — [learn.md](./learn.md#phase-1-week-2--cycle-detection) |
+| FR-06 Circular dependencies            | Partial         | `test_cycles.py` (8) + `test_pipeline.py` (`test_small_cycle`); API/UI pending — [learn.md](./learn.md#phase-1-week-2--cycle-detection) |
 | FR-07 REST API                         | Not implemented | `test_api.py` stub                                                              |
 | FR-13 Pipeline metrics                 | Not implemented | —                                                                               |
 | FR-14 Benchmark CLI                    | Not implemented | —                                                                               |
 
 
 **Parser milestone (Week 1):** `PYTHONPATH=. pytest tests/test_parser.py -v`  
-**Graph + cycles (Week 2):** `PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ -v`
+**Graph + cycles (Week 2):** `PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ tests/test_pipeline.py -v`
 
 **Manual CLI check (FR-03):** run from `backend/` with the **project root**, e.g. `python -m app.parser.cli .` or `python -m app.parser.cli tests/fixtures/mini_repo`. Do not pass a package subfolder (`./app/parser`) — internal imports will be misclassified as external. See [learn.md — Analysis root convention](./learn.md#analysis-root-convention).
 
@@ -697,13 +697,14 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**37 tes
 - [ ] Implement Betweenness Centrality computation
 - [x] Implement cycle detection — `CycleDetector` (`graph/algorithms/cycles.py`)
 - [x] Write unit tests for graph algorithms using small synthetic graphs — structure + cycles (`test_graph.py`, `test_cycles.py`)
-- [ ] Milestone: `python analyze.py path/to/repo/` prints top 10 critical files and any cycles
+- [x] Pipeline reports cycles — `PipelineResult.cycles`; CLI: `python -m app.pipeline <repo-path>`
+- [ ] Milestone: `python analyze.py path/to/repo/` prints top 10 critical files and any cycles (scores still pending)
 
 **Week 3: Ingestion + Integration**
 
 - [ ] Implement `IngestionService` — clone a GitHub repo to temp directory
 - [x] Walk repo and parse all `.py` files — `parse_repository()` (directory path, not zip)
-- [x] Wire parse → graph in `AnalysisPipeline`
+- [x] Wire parse → graph → cycles in `AnalysisPipeline` (`PipelineResult.cycles`)
 - [ ] Wire full pipeline with pipeline stage instrumentation
 - [ ] Add benchmark CLI: `python -m app.benchmark --repo path/to/project`
 - [ ] Output results as JSON file

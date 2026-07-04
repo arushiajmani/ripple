@@ -1,3 +1,5 @@
+"""CLI entry: python -m app.pipeline <repo-path>"""
+
 from __future__ import annotations
 
 import sys
@@ -21,9 +23,14 @@ def main() -> None:
     print(f"files: {len(result.analyses)}")
     print(f"nodes: {len(result.graph.nodes)}")
     print(f"edges: {len(result.graph.edges)}")
+    print(f"cycles: {result.cycles.cycle_count}")
     print("edges:")
     for source, target in result.graph.edges:
         print(f"  {source} -> {target}")
+    if result.cycles.has_cycles:
+        print("circular_dependencies:")
+        for cycle in result.cycles.cycles:
+            print(f"  {' -> '.join(cycle)} -> {cycle[0]}")
 
 
 if __name__ == "__main__":

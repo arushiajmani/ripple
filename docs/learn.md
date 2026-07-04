@@ -46,10 +46,10 @@
 |------|-------|
 | `AnalysisPipeline` in `backend/app/pipeline/pipeline.py` | Yes |
 | Wire `parse_repository` → `GraphBuilder` | Yes |
-| `PipelineResult` (`analyses` + `graph`) | Yes |
+| `PipelineResult` (`analyses` + `graph` + `cycles`) | Yes |
 | CLI: `python -m app.pipeline <repo-path>` | Yes |
 | Unit tests in `tests/test_pipeline.py` | Yes (9 cases) |
-| Wire `CycleDetector` into pipeline | No |
+| Wire `CycleDetector` into pipeline | Yes |
 
 ---
 
@@ -72,8 +72,9 @@ GraphBuilder              ←  file-level import graph (V1)
         ▼
 GraphResult               ←  nodes + edges today; scores later
         │
-        ├──► CycleDetector (shipped)  →  CircularDependencyResult
-        │         not yet in AnalysisPipeline
+        ▼
+CycleDetector             ←  CircularDependencyResult (in PipelineResult.cycles)
+        │
         ▼
 AlgorithmEngine (planned) →  PageRank, betweenness, criticality
         │
@@ -81,7 +82,7 @@ AlgorithmEngine (planned) →  PageRank, betweenness, criticality
 PostgreSQL / JSON / API / React
 ```
 
-**Shipped today:** Parser layer, `GraphBuilder`, `AnalysisPipeline` (parser → graph). Ingestion, algorithms, and API are planned.
+**Shipped today:** Parser layer, `GraphBuilder`, `CycleDetector`, `AnalysisPipeline` (parser → graph → cycles). Ingestion, scoring algorithms, and API are planned.
 
 `FileAnalysis` is intended to remain the **canonical source of parsed code information** for all current and future graph builders. Parse once; build many graph views from the same `dict[str, FileAnalysis]`.
 
@@ -90,8 +91,8 @@ PostgreSQL / JSON / API / React
 | Layer | Components | Responsibility |
 |-------|------------|----------------|
 | **Parser** | `ASTParser`, `FileAnalysis`, RepositoryParser (`parse_repository`) | Read source, walk AST, resolve imports, emit structured facts per file |
-| **Graph** | `GraphBuilder`, `GraphResult` | Turn parsed files into a graph view (import graph in V1) |
-| **Pipeline** | `AnalysisPipeline`, `PipelineResult` | Orchestrate parse → build without coupling layers |
+| **Graph** | `GraphBuilder`, `GraphResult`, `CycleDetector`, `CircularDependencyResult` | Import graph + circular dependency detection |
+| **Pipeline** | `AnalysisPipeline`, `PipelineResult` | Orchestrate parse → graph → cycles without coupling layers |
 
 ---
 
@@ -139,7 +140,7 @@ parse_repository(repo)  →  dict[str, FileAnalysis]   # once
 
 \*Planned — not implemented.
 
-Each builder is a **pure function** over the same `FileAnalysis` dict. Repository walk and AST parsing happen once per analysis job; new views are additive. This is the main reason `AnalysisPipeline` returns both `analyses` and `graph` in `PipelineResult`.
+Each builder is a **pure function** over the same `FileAnalysis` dict. Repository walk and AST parsing happen once per analysis job; new views are additive. `AnalysisPipeline` returns `analyses`, `graph`, and `cycles` in `PipelineResult`.
 
 ---
 
@@ -152,7 +153,8 @@ Each builder is a **pure function** over the same `FileAnalysis` dict. Repositor
 | Graph type | File-level dependency graph |
 | Nodes | Python file paths (`.py`) |
 | Edges | Import relationships from `resolved_deps` |
-| Components | `ASTParser`, RepositoryParser, `GraphBuilder`, `AnalysisPipeline` |
+| Components | `ASTParser`, RepositoryParser, `GraphBuilder`, `CycleDetector`, `AnalysisPipeline` |
+| Pipeline output | `PipelineResult(analyses, graph, cycles)` |
 | Out of scope for V1 graph | External packages as nodes, class/function edges, scores |
 
 ### V2 — Richer structure graphs
@@ -736,7 +738,7 @@ See [Testing overview](#testing-overview) for what each suite covers. For where 
 | `test_parse_repository_mini_repo` | integration | Full fixture walk, internal vs external deps on `auth.py` / `utils.py` |
 | `test_module_resolution_matches_path_suffix` | integration | `from app.parser.models` → `backend/app/parser/models.py` when repo root is above `backend/` |
 
-**Fixture:** `tests/fixtures/mini_repo/` — tiny `myapp` package for dependency classification.
+**Fixture:** `tests/fixtures/mini_repo/` — tiny `myapp` package for dependency classification; intentionally cyclic (`models` ↔ `utils`).
 
 **How to run only parser tests:** `PYTHONPATH=. pytest tests/test_parser.py -v`
 
@@ -892,7 +894,7 @@ backend/app/graph/algorithms/
 └── cycles.py     # CycleDetector
 ```
 
-**Status:** Implemented and unit-tested. **Not** wired into `AnalysisPipeline` yet — call it yourself on a `GraphResult`.
+**Status:** Implemented, unit-tested, and wired into `AnalysisPipeline` (`PipelineResult.cycles`). You can also call `CycleDetector().detect(graph)` directly.
 
 ### 1. Output type (`CircularDependencyResult`)
 
@@ -982,7 +984,7 @@ Without this, the UI and tests would see the same circular dependency multiple t
 
 **Deterministic order.** Cycles are sorted by length, then by path list, so output is stable across runs.
 
-**Not in the pipeline yet.** `AnalysisPipeline` still returns only `analyses` + `graph`. Wiring `CycleDetector` is the next integration step (attach cycles to `PipelineResult` / CLI / API).
+**In the pipeline.** `AnalysisPipeline.run()` calls `CycleDetector` after `GraphBuilder` and sets `PipelineResult.cycles`. The pipeline CLI prints circular dependencies when any exist. API/JSON persistence is still future work.
 
 ### 6. Test cases (`test_cycles.py`)
 
@@ -1005,7 +1007,7 @@ PYTHONPATH=. pytest tests/algorithms/test_cycles.py -v
 | `test_detect_deduplicates_rotations` | A→B→A is **one** cycle, not two rotations |
 | `test_run_matches_detect` | `run()` and `detect()` return the same result (alias) |
 
-**What these tests deliberately skip:** pipeline wiring, API/JSON output, frontend cycle warnings, PageRank/scoring.
+**What these tests deliberately skip:** API/JSON output, frontend cycle warnings, PageRank/scoring. Pipeline integration of cycles is covered in `test_pipeline.py` (`test_small_cycle`).
 
 Also listed under [Testing overview — Cycle detection tests](#cycle-detection-tests-test_cyclespy--full-list).
 
@@ -1041,7 +1043,7 @@ print(CycleDetector().detect(graph))
 
 ## Phase 1 — Analysis Pipeline
 
-**Goal:** Connect parser and graph in one call — parse once, build graph, return both.
+**Goal:** Connect parser, graph, and cycle detection in one call — parse once, build graph, detect cycles, return all three.
 
 ```python
 from app.pipeline import AnalysisPipeline
@@ -1049,24 +1051,64 @@ from app.pipeline import AnalysisPipeline
 result = AnalysisPipeline().run("tests/fixtures/mini_repo")
 result.analyses   # dict[str, FileAnalysis]
 result.graph      # GraphResult
+result.cycles     # CircularDependencyResult
 ```
 
-CLI: `python -m app.pipeline <repo-path>` (directory only today).
+```python
+@dataclass
+class PipelineResult:
+    analyses: dict[str, FileAnalysis]
+    graph: GraphResult
+    cycles: CircularDependencyResult
+```
+
+Flow:
+
+```
+parse_repository(repo_path)
+        │
+        ▼
+GraphBuilder().build(analyses)
+        │
+        ▼
+CycleDetector().detect(graph)
+        │
+        ▼
+PipelineResult(analyses, graph, cycles)
+```
+
+CLI: `python -m app.pipeline <repo-path>` (directory only today). Prints file/node/edge counts, edges, and any circular dependencies.
+
+```bash
+cd backend
+python -m app.pipeline tests/fixtures/mini_repo
+# files: 4
+# nodes: 4
+# edges: 4
+# cycles: 1
+# edges:
+#   myapp/auth.py -> myapp/models.py
+#   myapp/auth.py -> myapp/utils.py
+#   myapp/models.py -> myapp/utils.py
+#   myapp/utils.py -> myapp/models.py
+# circular_dependencies:
+#   myapp/models.py -> myapp/utils.py -> myapp/models.py
+```
 
 ### Tests (`test_pipeline.py`)
 
-**9 tests** — mostly temp repos on disk (real parse → graph); one case uses pytest `monkeypatch` to stub `parse_repository`.
+**9 tests** — mostly temp repos on disk (real parse → graph → cycles); one case uses pytest `monkeypatch` to stub `parse_repository`.
 
 | Test | Style | What it proves |
 |------|-------|----------------|
-| `test_empty_graph` | temp repo | Empty directory → no analyses, empty graph |
-| `test_single_node` | temp repo | One `.py` file → one node, zero edges |
-| `test_simple_dependency_graph` | temp repo | Multi-file imports → correct edges end-to-end |
+| `test_empty_graph` | temp repo | Empty directory → empty graph, no cycles |
+| `test_single_node` | temp repo | One `.py` file → one node, zero edges, no cycles |
+| `test_simple_dependency_graph` | temp repo | Multi-file imports → correct edges; acyclic |
 | `test_dedup_edges` | temp repo | Duplicate imports of same module → one edge |
 | `test_ignore_missing_deps` | monkeypatch | `resolved_deps` pointing outside repo → no edges |
-| `test_deterministic_ordering` | temp repo | Two runs return identical sorted nodes/edges |
-| `test_small_cycle` | temp repo | `a → b → c → a` cycle preserved through pipeline |
-| `test_run_parses_mini_repo_integration` | fixture | `mini_repo` parse + graph matches `expected_edges()` |
+| `test_deterministic_ordering` | temp repo | Two runs return identical nodes/edges/cycles |
+| `test_small_cycle` | temp repo | `a → b → c → a` in graph **and** `result.cycles` |
+| `test_run_parses_mini_repo_integration` | fixture | `mini_repo` cyclic (`models` ↔ `utils`); edges + `result.cycles` |
 | `test_run_raises_for_non_directory` | error path | File path (not dir) → `NotADirectoryError` |
 
 **Helpers:** `write_repo()` builds temp Python trees; `expected_edges()` derives edges from `analyses` for assertions.
@@ -1238,17 +1280,17 @@ This section is the **detailed test catalog** — what each file proves and how 
 |-------|------|-------|-------|------------------|
 | Parser | `test_parser.py` | 11 | Unit + integration | `ASTParser` import forms; `parse_repository` walk + resolution |
 | Graph | `test_graph.py` | 9 | Unit | `GraphBuilder` rules via synthetic `FileAnalysis` dicts |
-| Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline` wiring; temp repos + one monkeypatch |
+| Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline` wiring; parse → graph → cycles |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `GraphResult` |
 
 ```
 test_parser.py     →  ASTParser / parse_repository  →  FileAnalysis
 test_graph.py      →  GraphBuilder                  →  GraphResult     (no parser)
-test_pipeline.py   →  AnalysisPipeline              →  PipelineResult  (parse + graph)
+test_pipeline.py   →  AnalysisPipeline              →  PipelineResult  (parse + graph + cycles)
 test_cycles.py     →  CycleDetector                 →  CircularDependencyResult
 ```
 
-Parser tests do **not** call `GraphBuilder`. Graph tests do **not** call `parse_repository`. Pipeline tests exercise parse → graph except where monkeypatch injects controlled parse output. Cycle tests use `GraphResult` only — not wired into `AnalysisPipeline` yet.
+Parser tests do **not** call `GraphBuilder`. Graph tests do **not** call `parse_repository`. Pipeline tests exercise parse → graph → cycles except where monkeypatch injects controlled parse output. Cycle unit tests use `GraphResult` only (no pipeline).
 
 ### Parser tests (`test_parser.py`) — full list
 
@@ -1305,7 +1347,6 @@ Synthetic `GraphResult` only — no parser, no filesystem, no pipeline. Run only
 |------|-------|
 | Single-file pipeline input | CLI accepts dirs only |
 | PageRank / betweenness / criticality | Planned `AlgorithmEngine` |
-| `CycleDetector` in `AnalysisPipeline` | Implemented but not wired |
 | API / `test_api.py` | Stub only |
 | Syntax-error files through pipeline | Covered in graph unit tests only |
 | Five real open-source repos | Roadmap Week 1 milestone — manual / future |
@@ -1318,12 +1359,11 @@ Read [Roadmap.md](./Roadmap.md) for week-by-week tasks. Short preview:
 
 | Component | What it will do |
 |-----------|-----------------|
-| Wire `CycleDetector` into `AnalysisPipeline` | Attach `CircularDependencyResult` to pipeline output / CLI |
 | `AlgorithmEngine` | PageRank, betweenness, criticality score |
 | `IngestionService` | Unzip repo, walk tree, filter `venv/` / `__pycache__` |
 | REST API + Postgres | Persist results, async jobs, graph/impact endpoints |
 
-`AnalysisPipeline` (parser → graph) and `CycleDetector` (standalone) are **shipped**. See [Future Scope](#future-scope) for V2/V3 capabilities.
+`AnalysisPipeline` (parser → graph → cycles) is **shipped**. See [Future Scope](#future-scope) for V2/V3 capabilities.
 
 ---
 

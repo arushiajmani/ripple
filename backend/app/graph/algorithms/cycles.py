@@ -4,7 +4,7 @@ CycleDetector takes a GraphResult (nodes + directed edges), finds simple cycles
 via NetworkX, normalizes each cycle so rotations are treated as the same loop,
 and returns CircularDependencyResult.
 
-Not wired into AnalysisPipeline yet — call CycleDetector().detect(graph) directly.
+Wired into AnalysisPipeline as PipelineResult.cycles; can also call detect(graph) directly.
 
 Run tests from backend/:
     PYTHONPATH=. pytest tests/algorithms/test_cycles.py -v

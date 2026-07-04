@@ -1,6 +1,7 @@
 """CycleDetector unit tests.
 
-Synthetic GraphResult graphs only — no parser, no filesystem, no pipeline.
+Synthetic GraphResult graphs only — no parser, no filesystem.
+Pipeline integration of cycles is in test_pipeline.py (test_small_cycle).
 Uses build_graph fixture (GraphBuilder) or hand-built GraphResult for edge cases.
 
 Run from backend/:

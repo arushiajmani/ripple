@@ -94,9 +94,9 @@ Run `python -m app.parser.cli path/to/any_file.py` and see correctly extracted i
 - [ ] Compute PageRank scores (`nx.pagerank`, alpha=0.85)
 - [ ] Compute Betweenness Centrality (`nx.betweenness_centrality`)
 - [ ] Compute composite criticality score: `0.6 * normalized_pagerank + 0.4 * normalized_betweenness`
-- [x] Detect circular dependencies (`nx.simple_cycles`) — `CycleDetector` in `graph/algorithms/cycles.py` (not yet wired into `AnalysisPipeline`)
+- [x] Detect circular dependencies (`nx.simple_cycles`) — `CycleDetector` in `graph/algorithms/cycles.py`, wired into `AnalysisPipeline` as `PipelineResult.cycles`
 - [ ] Compute in-degree and out-degree for each node
-- [x] Write unit tests using small synthetic graphs (5–10 nodes) with known correct answers — graph structure + cycle detection (`test_graph.py`, `test_cycles.py`); score assertions pending PageRank/betweenness
+- [x] Write unit tests using small synthetic graphs (5–10 nodes) with known correct answers — graph structure + cycle detection (`test_graph.py`, `test_cycles.py`, `test_pipeline.py`); score assertions pending PageRank/betweenness
 - [ ] Serialize graph results to JSON
 
 #### Milestone Check
@@ -104,11 +104,11 @@ Run `python -m app.parser.cli path/to/any_file.py` and see correctly extracted i
 Graph structure and cycles (no scoring yet):
 
 ```bash
-PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ -v   # 17 tests
-PYTHONPATH=. pytest tests/test_pipeline.py -v                  # parse → graph integration
+PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ tests/test_pipeline.py -v
+python -m app.pipeline tests/fixtures/mini_repo   # prints 1 cycle (models ↔ utils)
 ```
 
-**CycleDetector study + test catalog:** [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection).
+**CycleDetector study + test catalog:** [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection). **Pipeline:** [learn.md — Analysis Pipeline](./learn.md#phase-1--analysis-pipeline).
 
 When PageRank/betweenness land, re-run analysis on a 20+ file project and confirm top-ranked files match intuition.
 
@@ -132,7 +132,7 @@ When PageRank/betweenness land, re-run analysis on a 20+ file project and confir
 - [ ] Accept zip file, extract to temp directory (`/tmp/ripple/{job_id}/`)
 - [x] Walk directory tree, collect all `.py` files — via `parse_repository()` / `collect_python_files()`
 - [x] Filter out virtual environments (`venv/`, `.venv/`, `env/`), build artifacts (`__pycache__/`, `*.pyc`), test files (optional — include for now, filter later) — via `SKIP_DIRS` in `parser/models.py`
-- [ ] Wire `IngestionService` → `ASTParser` → `GraphBuilder` → `AlgorithmEngine` into a single `AnalysisPipeline` class — partial: `AnalysisPipeline` wires parse → graph only
+- [ ] Wire `IngestionService` → `ASTParser` → `GraphBuilder` → `AlgorithmEngine` into a single `AnalysisPipeline` class — partial: `AnalysisPipeline` wires parse → graph → cycles
 - [ ] Instrument every pipeline stage with timing: `file_discovery`, `ast_parsing` (total + per-file average), `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization` — timings held on `PipelineResult`
 - [ ] Add benchmark CLI: `python -m app.benchmark --repo path/to/project` — runs the pipeline and prints a formatted timing breakdown to stdout (for performance testing on large repos)
 - [ ] Output complete result as a JSON file

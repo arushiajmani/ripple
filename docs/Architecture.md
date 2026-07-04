@@ -87,7 +87,7 @@ ripple/
 │   │   │
 │   │   ├── pipeline/           # Component 4: Orchestration
 │   │   │   ├── __init__.py
-│   │   │   └── pipeline.py     # AnalysisPipeline (wires 1+2+3)
+│   │   │   └── pipeline.py     # AnalysisPipeline (parse → graph → cycles)
 │   │   ├── benchmark.py        # CLI: python -m app.benchmark --repo <path>
 │   │   │
 │   │   ├── api/                # Component 5: HTTP layer
@@ -107,7 +107,7 @@ ripple/
 │       ├── algorithms/
 │       │   └── test_cycles.py   # CycleDetector (8)
 │       └── fixtures/
-│           └── mini_repo/       # shared parser + pipeline fixture
+│           └── mini_repo/       # cyclic fixture (models ↔ utils)
 │
 └── frontend/
     ├── Dockerfile
@@ -152,7 +152,7 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 |-------|-----------|-------|----------|
 | Parser | `tests/test_parser.py` | 11 | `ASTParser`, `parse_repository` — no graph |
 | Graph | `tests/test_graph.py` | 9 | `GraphBuilder` — synthetic `FileAnalysis`, no parser |
-| Pipeline | `tests/test_pipeline.py` | 9 | `AnalysisPipeline` — parse → graph on temp repos |
+| Pipeline | `tests/test_pipeline.py` | 9 | `AnalysisPipeline` — parse → graph → cycles |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `GraphResult` only |
 
 **37 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
@@ -378,17 +378,21 @@ dict[str, FileAnalysis]   canonical parsed record per file
 GraphBuilder              reads resolved_deps only (V1)
     ↓
 GraphResult               nodes + edges
+    ↓
+CycleDetector             nx.simple_cycles + normalize
+    ↓
+PipelineResult            analyses + graph + cycles
 ```
 
-`AnalysisPipeline` wires RepositoryParser → GraphBuilder and returns `PipelineResult(analyses, graph)`.
+`AnalysisPipeline` wires RepositoryParser → GraphBuilder → CycleDetector and returns `PipelineResult(analyses, graph, cycles)`.
 
 ### Layer responsibilities
 
 | Layer | Components | Role |
 |-------|------------|------|
 | Parser | `ASTParser`, `FileAnalysis`, RepositoryParser | Single AST pass; emit all structured facts |
-| Graph | `GraphBuilder`, `GraphResult` | Build a graph *view* from parsed data |
-| Pipeline | `AnalysisPipeline` | Orchestrate without coupling parser to graph internals |
+| Graph | `GraphBuilder`, `GraphResult`, `CycleDetector`, `CircularDependencyResult` | Import graph + circular dependencies |
+| Pipeline | `AnalysisPipeline`, `PipelineResult` | Orchestrate parse → graph → cycles |
 
 ### Design decisions
 
@@ -397,14 +401,14 @@ GraphResult               nodes + edges
 3. **Unused fields are kept** — avoids reparsing and breaking CLI/tests when V2 builders arrive.
 4. **Future builders share the same `dict[str, FileAnalysis]`** — parse once, run `GraphBuilder`, `ClassGraphBuilder`, etc.
 5. **Analysis always runs from the project root** — `parse_repository(root)` indexes paths relative to `root`. Import resolution maps package names (`app.parser.models`) to those paths (exact + suffix). Pointing at a package subfolder (e.g. `app/parser/`) yields bare names like `models.py`, so in-repo imports are misclassified as `external_deps`. Production (zip/clone) uses the uploaded project root; the CLI must do the same. Detail: [learn.md — Analysis root convention](./learn.md#analysis-root-convention).
-6. **`CycleDetector` is a separate algorithm unit** — reads `GraphResult`, uses NetworkX `simple_cycles`, normalizes rotations, returns `CircularDependencyResult`. Shipped and unit-tested (`tests/algorithms/test_cycles.py`, 8 cases); not yet wired into `AnalysisPipeline`. Detail: [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection).
+6. **`CycleDetector` is a separate algorithm unit** — reads `GraphResult`, uses NetworkX `simple_cycles`, normalizes rotations, returns `CircularDependencyResult`. Wired into `AnalysisPipeline` as `PipelineResult.cycles`; also unit-tested in isolation (`tests/algorithms/test_cycles.py`, 8 cases). Detail: [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection).
 
 ### Future scope
 
 | Version | Capabilities |
 |---------|----------------|
-| **V1 (current)** | File-level graph; nodes = files; edges = imports |
-| **V2** | Class graph (inheritance, dependencies), function/call graphs, impact analysis, `external_deps` analytics, PageRank/cycles/criticality |
+| **V1 (current)** | File-level graph; nodes = files; edges = imports; `CycleDetector` on `PipelineResult.cycles` |
+| **V2** | Class graph (inheritance, dependencies), function/call graphs, impact analysis, `external_deps` analytics, PageRank/criticality |
 | **V3** | AI-assisted explanations, architectural insights, change-risk estimation |
 
 Detail: [learn.md — Design Decisions](./learn.md#design-decisions) · [learn.md — Future Scope](./learn.md#future-scope)

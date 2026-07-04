@@ -11,13 +11,13 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 * **Dependency classification** — internal (`resolved_deps`) vs stdlib/third-party (`external_deps`) when project context is provided
 * **Graph builder** — assemble `dict[str, FileAnalysis]` into a `GraphResult` (nodes + directed import edges)
 * **Cycle detection** — `CycleDetector` finds circular dependencies via NetworkX (`graph/algorithms/cycles.py`)
-* **Analysis pipeline** — `AnalysisPipeline` wires `parse_repository()` → `GraphBuilder` in one step
+* **Analysis pipeline** — `AnalysisPipeline` wires parse → graph → cycles (`PipelineResult.cycles`)
 * **CLI** — parser: `python -m app.parser.cli`; pipeline: `python -m app.pipeline`
 
 ### Planned (near term)
 
 * Zip upload ingestion (`IngestionService`)
-* Graph algorithms — PageRank, betweenness, cycle detection, criticality scores (`AlgorithmEngine`)
+* Graph algorithms — PageRank, betweenness, criticality scores (`AlgorithmEngine`)
 * Pipeline stage metrics and benchmark CLI (`python -m app.benchmark --repo path/to/project`)
 * Impact analysis for proposed changes
 * Interactive graph visualization
@@ -45,13 +45,17 @@ FileAnalysis              canonical parsed record (per file)
 GraphBuilder              V1: file import graph from resolved_deps only
     ↓
 GraphResult
+    ↓
+CycleDetector             CircularDependencyResult
+    ↓
+PipelineResult            analyses + graph + cycles
 ```
 
 **Parser layer:** `ASTParser`, `FileAnalysis`, RepositoryParser (`parse_repository` in `repository.py`)
 
-**Graph layer:** `GraphBuilder`, `GraphResult`
+**Graph layer:** `GraphBuilder`, `GraphResult`, `CycleDetector`, `CircularDependencyResult`
 
-**Pipeline:** `AnalysisPipeline` orchestrates parse → build. `GraphBuilder` currently reads only `resolved_deps`; other `FileAnalysis` fields (`classes`, `functions`, `imports`, `external_deps`, `line_count`, `has_syntax_error`) are preserved for V2 graph builders without reparsing.
+**Pipeline:** `AnalysisPipeline` orchestrates parse → graph → cycles. `GraphBuilder` currently reads only `resolved_deps`; other `FileAnalysis` fields (`classes`, `functions`, `imports`, `external_deps`, `line_count`, `has_syntax_error`) are preserved for V2 graph builders without reparsing.
 
 Full rationale: [Design Decisions](docs/learn.md#design-decisions) · Roadmap: [Future Scope](docs/learn.md#future-scope) · Study guide: [docs/learn.md](docs/learn.md)
 
@@ -95,7 +99,7 @@ ripple/
 │   │   │   ├── models.py        # GraphResult
 │   │   │   └── builder.py       # GraphBuilder
 │   │   └── pipeline/
-│   │       ├── pipeline.py      # AnalysisPipeline
+│   │       ├── pipeline.py      # AnalysisPipeline (parse → graph → cycles)
 │   │       └── __main__.py      # python -m app.pipeline
 │   └── tests/
 │       ├── sample_file.py       # single file to try the parser on
@@ -106,7 +110,7 @@ ripple/
 │       ├── algorithms/
 │       │   └── test_cycles.py   # cycle detection (8)
 │       └── fixtures/
-│           └── mini_repo/       # shared fixture for parser + pipeline
+│           └── mini_repo/       # cyclic fixture (models ↔ utils)
 ├── frontend/
 ├── docs/
 │   ├── learn.md                 # architecture, design decisions, study guide
@@ -236,10 +240,11 @@ Edges run **importer → imported** — e.g. `("myapp/auth.py", "myapp/models.py
 
 ### Pipeline
 
-Run parse + graph in one step:
+Run parse → graph → cycle detection in one step:
 
 ```bash
 python -m app.pipeline tests/fixtures/mini_repo
+# files / nodes / edges / cycles counts, then edges (and circular_dependencies if any)
 ```
 
 ```python
@@ -247,8 +252,12 @@ from app.pipeline import AnalysisPipeline
 
 result = AnalysisPipeline().run("tests/fixtures/mini_repo")
 result.analyses   # dict[str, FileAnalysis]
-result.graph      # GraphResult
+result.graph      # GraphResult (nodes + edges)
+result.cycles     # CircularDependencyResult
+# result.cycles.has_cycles, result.cycles.cycle_count, result.cycles.cycles
 ```
+
+Study guide: [docs/learn.md — Analysis Pipeline](docs/learn.md#phase-1--analysis-pipeline) · [Cycle Detection](docs/learn.md#phase-1-week-2--cycle-detection)
 
 ---
 
@@ -280,10 +289,10 @@ PYTHONPATH=. pytest tests/algorithms/ -v         # cycle detection (8)
 |-------|-------|--------|
 | **`test_parser.py`** | 11 | Import forms (parametrized), `__future__` / syntax edge cases, `mini_repo` integration |
 | **`test_graph.py`** | 9 | Empty/single-node graphs; dependency edges; dedup; missing deps; cycles; self-loops; dict-key semantics; syntax-error files |
-| **`test_pipeline.py`** | 9 | End-to-end parse → graph on temp repos; dedup; deterministic ordering; cycles; `mini_repo` integration; non-directory error; missing deps via monkeypatch |
+| **`test_pipeline.py`** | 9 | End-to-end parse → graph → cycles; dedup; deterministic ordering; `test_small_cycle`; `mini_repo` integration; non-directory error; missing deps via monkeypatch |
 | **`test_cycles.py`** | 8 | `CycleDetector`: empty/acyclic graphs, simple cycles, self-loops, disjoint cycles, normalization |
 
-**Fixture:** `tests/fixtures/mini_repo/` — shared by parser and pipeline integration tests.
+**Fixture:** `tests/fixtures/mini_repo/` — shared by parser and pipeline; intentionally cyclic (`models` ↔ `utils`) so `python -m app.pipeline tests/fixtures/mini_repo` reports one cycle.
 
 **More detail:** [docs/learn.md — Cycle Detection](docs/learn.md#phase-1-week-2--cycle-detection) (how it works + full test table). [Testing overview](docs/learn.md#testing-overview) (all suites).
 
@@ -322,9 +331,8 @@ npm run dev
 * [x] `CycleDetector` + tests (`tests/algorithms/test_cycles.py`, 8 cases)
 * [x] `GraphBuilder` + `GraphResult` — nodes and directed import edges
 * [x] Graph unit tests (`tests/test_graph.py`, 9 cases)
-* [x] `AnalysisPipeline` — parser → graph orchestration
+* [x] `AnalysisPipeline` — parser → graph → cycles (`PipelineResult.cycles`)
 * [x] Pipeline tests (`tests/test_pipeline.py`, 9 cases)
-* [ ] Wire `CycleDetector` into `AnalysisPipeline`
 * [ ] PageRank, betweenness, and composite criticality scoring
 * [ ] `IngestionService` (zip upload, filters)
 * [ ] Pipeline stage metrics and benchmark CLI

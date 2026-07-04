@@ -1,11 +1,21 @@
+"""AnalysisPipeline tests.
+
+Integration: real parse → graph → cycle detection on temp repos / mini_repo.
+Unit-style: one monkeypatch case stubs parse_repository.
+
+Run from backend/:
+    PYTHONPATH=. pytest tests/test_pipeline.py -v
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
+
 import pytest
 
 from app.parser.models import FileAnalysis
-from app.pipeline import AnalysisPipeline
 from app.parser.repository import collect_python_files
+from app.pipeline import AnalysisPipeline
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_repo"
 
@@ -35,6 +45,8 @@ def expected_edges(analyses: dict[str, FileAnalysis]) -> list[tuple[str, str]]:
     )
 
 
+# --- Acyclic graphs ---
+
 def test_empty_graph(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
     repo = tmp_path / "empty"
     repo.mkdir()
@@ -44,6 +56,8 @@ def test_empty_graph(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
     assert result.analyses == {}
     assert result.graph.nodes == []
     assert result.graph.edges == []
+    assert result.cycles.cycles == []
+    assert not result.cycles.has_cycles
 
 
 def test_single_node(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
@@ -56,6 +70,7 @@ def test_single_node(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
 
     assert result.graph.nodes == ["solo/main.py"]
     assert result.graph.edges == []
+    assert not result.cycles.has_cycles
 
 
 def test_simple_dependency_graph(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
@@ -79,6 +94,7 @@ def test_simple_dependency_graph(pipeline: AnalysisPipeline, tmp_path: Path) -> 
     assert ("app/auth.py", "app/utils.py") in result.graph.edges
     assert ("app/utils.py", "app/models.py") in result.graph.edges
     assert result.graph.edges == expected_edges(result.analyses)
+    assert not result.cycles.has_cycles
 
 
 def test_dedup_edges(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
@@ -97,6 +113,7 @@ def test_dedup_edges(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
     result = pipeline.run(repo)
 
     assert result.graph.edges == [("app/auth.py", "app/models.py")]
+    assert not result.cycles.has_cycles
 
 
 def test_ignore_missing_deps(
@@ -104,6 +121,7 @@ def test_ignore_missing_deps(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """resolved_deps pointing outside the analyses dict produce no edges."""
     analyses = {
         "pkg/main.py": FileAnalysis(
             file_path="pkg/main.py",
@@ -125,6 +143,7 @@ def test_ignore_missing_deps(
 
     assert result.graph.nodes == ["pkg/helper.py", "pkg/main.py"]
     assert result.graph.edges == []
+    assert not result.cycles.has_cycles
 
 
 def test_deterministic_ordering(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
@@ -146,6 +165,7 @@ def test_deterministic_ordering(pipeline: AnalysisPipeline, tmp_path: Path) -> N
     assert first.graph.edges == sorted(first.graph.edges)
     assert first.graph.nodes == second.graph.nodes
     assert first.graph.edges == second.graph.edges
+    assert first.cycles.cycles == second.cycles.cycles
     assert first.graph.nodes == [
         "m_pkg/__init__.py",
         "m_pkg/m.py",
@@ -155,7 +175,10 @@ def test_deterministic_ordering(pipeline: AnalysisPipeline, tmp_path: Path) -> N
     ]
 
 
+# --- Cycles through the full pipeline ---
+
 def test_small_cycle(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
+    """A → B → C → A is preserved in the graph and reported on PipelineResult.cycles."""
     repo = write_repo(
         tmp_path / "cycle",
         {
@@ -179,15 +202,26 @@ def test_small_cycle(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
         ("cycle/b.py", "cycle/c.py"),
         ("cycle/c.py", "cycle/a.py"),
     ]
+    assert result.cycles.has_cycles
+    assert result.cycles.cycle_count == 1
+    assert result.cycles.cycles == [
+        ["cycle/a.py", "cycle/b.py", "cycle/c.py"],
+    ]
 
 
 def test_run_parses_mini_repo_integration(pipeline: AnalysisPipeline) -> None:
+    """mini_repo is intentionally cyclic (models ↔ utils); edges match resolved_deps."""
     result = pipeline.run(FIXTURE_ROOT)
 
     assert set(result.analyses) == collect_python_files(FIXTURE_ROOT)
     assert result.graph.nodes == sorted(result.analyses)
     assert result.graph.edges == expected_edges(result.analyses)
     assert len(result.graph.edges) > 0
+    assert ("myapp/models.py", "myapp/utils.py") in result.graph.edges
+    assert ("myapp/utils.py", "myapp/models.py") in result.graph.edges
+    assert result.cycles.has_cycles
+    assert result.cycles.cycle_count == 1
+    assert result.cycles.cycles == [["myapp/models.py", "myapp/utils.py"]]
 
 
 def test_run_raises_for_non_directory(tmp_path: Path) -> None:
