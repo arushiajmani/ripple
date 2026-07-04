@@ -30,6 +30,7 @@ def test_top_level_keys_and_order() -> None:
     assert list(data.keys()) == [
         "metadata",
         "summary",
+        "statistics",
         "graph",
         "analysis",
         "files",
@@ -42,18 +43,38 @@ def test_metadata() -> None:
     assert data["metadata"] == {"generated_at": "2026-07-04T12:00:00Z"}
 
 
-def test_summary_stats() -> None:
+def test_summary_is_graph_level() -> None:
     result = AnalysisPipeline().run(FIXTURE_ROOT)
     summary = _dict(result)["summary"]
 
+    assert set(summary.keys()) == {
+        "file_count",
+        "node_count",
+        "edge_count",
+        "cycle_count",
+    }
     assert summary["file_count"] == len(result.analyses)
     assert summary["node_count"] == len(result.graph.nodes)
     assert summary["edge_count"] == len(result.graph.edges)
     assert summary["cycle_count"] == 1
-    assert summary["class_count"] >= 1  # User, Helper in mini_repo
-    assert summary["function_count"] >= 1
-    assert summary["internal_dependency_count"] >= summary["edge_count"]
-    assert summary["external_dependency_count"] >= 1
+
+
+def test_statistics_are_parser_level() -> None:
+    result = AnalysisPipeline().run(FIXTURE_ROOT)
+    data = _dict(result)
+    stats = data["statistics"]
+
+    assert set(stats.keys()) == {
+        "class_count",
+        "function_count",
+        "total_internal_dependencies",
+        "total_external_dependencies",
+    }
+    assert stats["class_count"] >= 1  # User, Helper in mini_repo
+    assert stats["function_count"] >= 1
+    # Repo-wide sums of resolved_deps / external_deps list lengths.
+    assert stats["total_internal_dependencies"] >= data["summary"]["edge_count"]
+    assert stats["total_external_dependencies"] >= 1
 
 
 def test_graph_nodes_are_path_strings() -> None:
@@ -85,10 +106,10 @@ def test_graph_edges_are_self_describing() -> None:
 
 
 def test_analysis_groups_cycles_and_scores() -> None:
-    data = _dict(top_n=2)
+    data = _dict()
     analysis = data["analysis"]
 
-    assert set(analysis.keys()) == {"cycles", "scores", "top_critical"}
+    assert set(analysis.keys()) == {"cycles", "scores"}
     assert analysis["cycles"]["has_cycles"] is True
     assert analysis["cycles"]["cycle_count"] == 1
     cycle = analysis["cycles"]["cycles"][0]
@@ -108,7 +129,6 @@ def test_analysis_groups_cycles_and_scores() -> None:
     ]
 
     assert len(analysis["scores"]) == 4
-    assert len(analysis["top_critical"]) == 2
     score = analysis["scores"][0]
     assert set(score) == {
         "file_path",
@@ -122,6 +142,17 @@ def test_analysis_groups_cycles_and_scores() -> None:
     assert criticalities == sorted(criticalities, reverse=True)
 
 
+def test_top_n_is_slice_of_scores() -> None:
+    """JSON has no top_critical; consumers slice the ranked scores list."""
+    from app.pipeline.serialize import node_score_to_dict
+
+    result = AnalysisPipeline().run(FIXTURE_ROOT)
+    data = _dict(result)
+    assert data["analysis"]["scores"][:2] == [
+        node_score_to_dict(s) for s in result.scores.top(2)
+    ]
+
+
 def test_files_optional() -> None:
     result = AnalysisPipeline().run(FIXTURE_ROOT)
 
@@ -131,7 +162,13 @@ def test_files_optional() -> None:
     assert "files" in with_files
     assert "myapp/models.py" in with_files["files"]
     assert "files" not in without
-    assert list(without.keys()) == ["metadata", "summary", "graph", "analysis"]
+    assert list(without.keys()) == [
+        "metadata",
+        "summary",
+        "statistics",
+        "graph",
+        "analysis",
+    ]
 
 
 def test_files_keep_full_file_analysis() -> None:

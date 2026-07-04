@@ -1,43 +1,45 @@
 {
   "metadata": {
-    "generated_at": "2026-07-04T07:37:50Z"
+    "generated_at": "2026-07-04T17:07:44Z"
   },
   "summary": {
     "file_count": 4,
     "node_count": 4,
     "edge_count": 4,
-    "cycle_count": 1,
+    "cycle_count": 1
+  },
+  "statistics": {
     "class_count": 2,
     "function_count": 3,
-    "internal_dependency_count": 4,
-    "external_dependency_count": 3
+    "total_internal_dependencies": 4,
+    "total_external_dependencies": 3
   },
   "graph": {
     "nodes": [
-      "mini_repo/myapp/__init__.py",
-      "mini_repo/myapp/auth.py",
-      "mini_repo/myapp/models.py",
-      "mini_repo/myapp/utils.py"
+      "myapp/__init__.py",
+      "myapp/auth.py",
+      "myapp/models.py",
+      "myapp/utils.py"
     ],
     "edges": [
       {
-        "source": "mini_repo/myapp/auth.py",
-        "target": "mini_repo/myapp/models.py",
+        "source": "myapp/auth.py",
+        "target": "myapp/models.py",
         "type": "imports"
       },
       {
-        "source": "mini_repo/myapp/auth.py",
-        "target": "mini_repo/myapp/utils.py",
+        "source": "myapp/auth.py",
+        "target": "myapp/utils.py",
         "type": "imports"
       },
       {
-        "source": "mini_repo/myapp/models.py",
-        "target": "mini_repo/myapp/utils.py",
+        "source": "myapp/models.py",
+        "target": "myapp/utils.py",
         "type": "imports"
       },
       {
-        "source": "mini_repo/myapp/utils.py",
-        "target": "mini_repo/myapp/models.py",
+        "source": "myapp/utils.py",
+        "target": "myapp/models.py",
         "type": "imports"
       }
     ]
@@ -49,19 +51,19 @@
       "cycles": [
         {
           "nodes": [
-            "mini_repo/myapp/models.py",
-            "mini_repo/myapp/utils.py"
+            "myapp/models.py",
+            "myapp/utils.py"
           ],
           "length": 2,
           "edges": [
             {
-              "source": "mini_repo/myapp/models.py",
-              "target": "mini_repo/myapp/utils.py",
+              "source": "myapp/models.py",
+              "target": "myapp/utils.py",
               "type": "imports"
             },
             {
-              "source": "mini_repo/myapp/utils.py",
-              "target": "mini_repo/myapp/models.py",
+              "source": "myapp/utils.py",
+              "target": "myapp/models.py",
               "type": "imports"
             }
           ]
@@ -70,7 +72,7 @@
     },
     "scores": [
       {
-        "file_path": "mini_repo/myapp/models.py",
+        "file_path": "myapp/models.py",
         "pagerank": 0.452380773567559,
         "betweenness": 0.0,
         "criticality": 0.6,
@@ -78,7 +80,7 @@
         "out_degree": 1
       },
       {
-        "file_path": "mini_repo/myapp/utils.py",
+        "file_path": "myapp/utils.py",
         "pagerank": 0.452380773567559,
         "betweenness": 0.0,
         "criticality": 0.6,
@@ -86,7 +88,7 @@
         "out_degree": 1
       },
       {
-        "file_path": "mini_repo/myapp/__init__.py",
+        "file_path": "myapp/__init__.py",
         "pagerank": 0.04761922643244094,
         "betweenness": 0.0,
         "criticality": 0.0,
@@ -94,41 +96,7 @@
         "out_degree": 0
       },
       {
-        "file_path": "mini_repo/myapp/auth.py",
-        "pagerank": 0.04761922643244094,
-        "betweenness": 0.0,
-        "criticality": 0.0,
-        "in_degree": 0,
-        "out_degree": 2
-      }
-    ],
-    "top_critical": [
-      {
-        "file_path": "mini_repo/myapp/models.py",
-        "pagerank": 0.452380773567559,
-        "betweenness": 0.0,
-        "criticality": 0.6,
-        "in_degree": 2,
-        "out_degree": 1
-      },
-      {
-        "file_path": "mini_repo/myapp/utils.py",
-        "pagerank": 0.452380773567559,
-        "betweenness": 0.0,
-        "criticality": 0.6,
-        "in_degree": 2,
-        "out_degree": 1
-      },
-      {
-        "file_path": "mini_repo/myapp/__init__.py",
-        "pagerank": 0.04761922643244094,
-        "betweenness": 0.0,
-        "criticality": 0.0,
-        "in_degree": 0,
-        "out_degree": 0
-      },
-      {
-        "file_path": "mini_repo/myapp/auth.py",
+        "file_path": "myapp/auth.py",
         "pagerank": 0.04761922643244094,
         "betweenness": 0.0,
         "criticality": 0.0,
@@ -136,165 +104,5 @@
         "out_degree": 2
       }
     ]
-  },
-  "files": {
-    "mini_repo/myapp/__init__.py": {
-      "file_path": "mini_repo/myapp/__init__.py",
-      "imports": [],
-      "resolved_deps": [],
-      "external_deps": [],
-      "classes": [],
-      "functions": [],
-      "methods": [],
-      "line_count": 2,
-      "has_syntax_error": false
-    },
-    "mini_repo/myapp/auth.py": {
-      "file_path": "mini_repo/myapp/auth.py",
-      "imports": [
-        {
-          "module": "os",
-          "type": "import",
-          "alias": null,
-          "name": null,
-          "display": "import os"
-        },
-        {
-          "module": "requests",
-          "type": "import",
-          "alias": null,
-          "name": null,
-          "display": "import requests"
-        },
-        {
-          "module": "myapp.models",
-          "type": "from_import",
-          "alias": null,
-          "name": "User",
-          "display": "from myapp.models import User"
-        },
-        {
-          "module": "myapp.utils",
-          "type": "from_import",
-          "alias": null,
-          "name": "hash_password",
-          "display": "from myapp.utils import hash_password"
-        }
-      ],
-      "resolved_deps": [
-        "mini_repo/myapp/models.py",
-        "mini_repo/myapp/utils.py"
-      ],
-      "external_deps": [
-        "os",
-        "requests"
-      ],
-      "classes": [],
-      "functions": [
-        {
-          "name": "login",
-          "parent_class": null
-        }
-      ],
-      "methods": [],
-      "line_count": 15,
-      "has_syntax_error": false
-    },
-    "mini_repo/myapp/models.py": {
-      "file_path": "mini_repo/myapp/models.py",
-      "imports": [
-        {
-          "module": "myapp.utils",
-          "type": "from_import",
-          "alias": null,
-          "name": "hash_password",
-          "display": "from myapp.utils import hash_password"
-        }
-      ],
-      "resolved_deps": [
-        "mini_repo/myapp/utils.py"
-      ],
-      "external_deps": [],
-      "classes": [
-        {
-          "name": "User",
-          "bases": [],
-          "methods": [
-            "__init__",
-            "fingerprint"
-          ]
-        }
-      ],
-      "functions": [],
-      "methods": [
-        {
-          "name": "__init__",
-          "parent_class": "User"
-        },
-        {
-          "name": "fingerprint",
-          "parent_class": "User"
-        }
-      ],
-      "line_count": 11,
-      "has_syntax_error": false
-    },
-    "mini_repo/myapp/utils.py": {
-      "file_path": "mini_repo/myapp/utils.py",
-      "imports": [
-        {
-          "module": "json",
-          "type": "import",
-          "alias": null,
-          "name": null,
-          "display": "import json"
-        },
-        {
-          "module": "myapp.models",
-          "type": "from_import",
-          "alias": null,
-          "name": "User",
-          "display": "from myapp.models import User"
-        }
-      ],
-      "resolved_deps": [
-        "mini_repo/myapp/models.py"
-      ],
-      "external_deps": [
-        "json"
-      ],
-      "classes": [
-        {
-          "name": "Helper",
-          "bases": [],
-          "methods": [
-            "__init__",
-            "get_name"
-          ]
-        }
-      ],
-      "functions": [
-        {
-          "name": "hash_password",
-          "parent_class": null
-        },
-        {
-          "name": "make_user",
-          "parent_class": null
-        }
-      ],
-      "methods": [
-        {
-          "name": "__init__",
-          "parent_class": "Helper"
-        },
-        {
-          "name": "get_name",
-          "parent_class": "Helper"
-        }
-      ],
-      "line_count": 18,
-      "has_syntax_error": false
-    }
   }
 }

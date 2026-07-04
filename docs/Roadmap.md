@@ -97,7 +97,7 @@ Run `python -m app.parser.cli path/to/any_file.py` and see correctly extracted i
 - [x] Detect circular dependencies (`nx.simple_cycles`) — `CycleDetector` in `graph/algorithms/cycles.py`, wired into `AnalysisPipeline` as `PipelineResult.cycles`
 - [x] Compute in-degree and out-degree for each node — on `NodeScore`
 - [x] Write unit tests using small synthetic graphs (5–10 nodes) with known correct answers — `test_graph.py`, `test_cycles.py`, `test_scoring.py`, `test_pipeline.py`
-- [x] Serialize graph results to JSON — `metadata` / `summary` / `graph` / `analysis` / `files`
+- [x] Serialize graph results to JSON — `metadata` / `summary` / `statistics` / `graph` / `analysis` / `files`
 
 #### Milestone Check
 
@@ -212,7 +212,7 @@ Upload a zip via `curl` or Swagger UI. Poll status endpoint until `"complete"`. 
 
 #### Tasks
 
-- [ ] Implement `GET /api/graph/{repo_id}` — returns full graph JSON (nodes, edges, scores, cycles, top_critical)
+- [ ] Implement `GET /api/graph/{repo_id}` — returns full graph JSON (nodes, edges, scores, cycles); optional `?top=N` to slice scores
 - [ ] Implement `GET /api/impact/{repo_id}?file=path/to/file.py` — returns direct and transitive dependents
 - [ ] Implement `GET /api/repos` — returns list of all analyzed repos
 - [ ] Add proper HTTP error responses (404 for unknown repo_id, 422 for invalid inputs)

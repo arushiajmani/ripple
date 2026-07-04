@@ -263,7 +263,8 @@ result.graph      # GraphResult (nodes + edges)
 result.cycles     # CircularDependencyResult
 result.scores     # ScoringResult (sorted by criticality)
 result.scores.top(10)  # highest-criticality NodeScore list
-# JSON: metadata, summary, graph, analysis, files
+# JSON: metadata, summary, statistics, graph, analysis (scores), files
+# Top N in JSON: analysis.scores.slice(0, N) — no separate top_critical field
 result.write_json("result.json")
 ```
 # NodeScore fields:
@@ -295,11 +296,11 @@ From `backend/` (requires `PYTHONPATH=.` so Python finds the `app` package):
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 61 tests (-v = verbose, one line per test)
+PYTHONPATH=. pytest tests/ -v                    # all 63 tests (-v = verbose, one line per test)
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
-PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (12)
+PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (14)
 PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (12)
 ```
 
@@ -308,7 +309,7 @@ PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (12)
 | **`test_parser.py`** | 11 | Import forms (parametrized), `__future__` / syntax edge cases, `mini_repo` integration |
 | **`test_graph.py`** | 9 | Empty/single-node graphs; dependency edges; dedup; missing deps; cycles; self-loops; dict-key semantics; syntax-error files |
 | **`test_pipeline.py`** | 9 | End-to-end parse → graph → cycles → scores; `test_small_cycle`; `mini_repo` integration |
-| **`test_serialize.py`** | 12 | metadata, graph, analysis, files; optional `files`; stable ordering |
+| **`test_serialize.py`** | 14 | metadata, summary, statistics, graph, analysis, files |
 | **`test_cycles.py`** | 8 | `CycleDetector`: empty/acyclic graphs, simple cycles, self-loops, disjoint cycles, normalization |
 | **`test_scoring.py`** | 12 | `AlgorithmEngine`: normalize, PageRank fan-in, betweenness bridge, criticality weights, `top()` |
 

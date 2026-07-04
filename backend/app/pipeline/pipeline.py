@@ -43,16 +43,14 @@ class PipelineResult:
     def to_dict(
         self,
         *,
-        top_n: int = 10,
         include_files: bool = True,
         generated_at: datetime | None = None,
     ) -> dict:
-        """JSON-ready dict (metadata, summary, graph, analysis, files)."""
+        """JSON-ready dict (metadata, summary, statistics, graph, analysis, files)."""
         from app.pipeline.serialize import pipeline_result_to_dict
 
         return pipeline_result_to_dict(
             self,
-            top_n=top_n,
             include_files=include_files,
             generated_at=generated_at,
         )
@@ -61,7 +59,6 @@ class PipelineResult:
         self,
         *,
         indent: int | None = 2,
-        top_n: int = 10,
         include_files: bool = True,
         generated_at: datetime | None = None,
     ) -> str:
@@ -71,7 +68,6 @@ class PipelineResult:
         return pipeline_result_to_json(
             self,
             indent=indent,
-            top_n=top_n,
             include_files=include_files,
             generated_at=generated_at,
         )
@@ -81,7 +77,6 @@ class PipelineResult:
         path: str | Path,
         *,
         indent: int | None = 2,
-        top_n: int = 10,
         include_files: bool = True,
         generated_at: datetime | None = None,
     ) -> Path:
@@ -92,7 +87,6 @@ class PipelineResult:
             self,
             path,
             indent=indent,
-            top_n=top_n,
             include_files=include_files,
             generated_at=generated_at,
         )

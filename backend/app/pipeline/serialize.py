@@ -7,11 +7,12 @@ Schema (v1) — hierarchical so future analyses extend ``analysis`` without
 new top-level keys:
 
     {
-      "metadata": { "generated_at" },
-      "summary":  { counts / cheap repo stats },
-      "graph":    { "nodes", "edges" },
-      "analysis": { "cycles", "scores", "top_critical", ...future... },
-      "files":    { path → FileAnalysis fields }   # optional
+      "metadata":    { "generated_at" },
+      "summary":     { graph-level counts },
+      "statistics":  { parser / source-code counts },
+      "graph":       { "nodes", "edges" },
+      "analysis":    { "cycles", "scores", ...future... },
+      "files":       { path → FileAnalysis fields }   # optional
     }
 
 Design notes:
@@ -50,9 +51,6 @@ from app.parser.models import (
     ImportInfo,
 )
 from app.pipeline.pipeline import PipelineResult
-
-# Default number of files in analysis.top_critical.
-DEFAULT_TOP_N = 10
 
 # Edge kind for the file import graph (extensible later: calls, inherits, …).
 EDGE_TYPE_IMPORTS = "imports"
@@ -125,19 +123,30 @@ def build_metadata(*, generated_at: datetime | None = None) -> dict[str, Any]:
 
 
 def build_summary(result: PipelineResult) -> dict[str, Any]:
-    """Cheap repository statistics (no extra graph algorithms)."""
-    analyses = result.analyses.values()
+    """Graph-level counts (structure + cycles), not parser detail."""
     return {
         "file_count": len(result.analyses),
         "node_count": len(result.graph.nodes),
         "edge_count": len(result.graph.edges),
         "cycle_count": result.cycles.cycle_count,
+    }
+
+
+def build_statistics(result: PipelineResult) -> dict[str, Any]:
+    """Cheap counts from parsed source (FileAnalysis), not the graph.
+
+    Dependency fields are **repo-wide totals** (sum of list lengths across all
+    files). Per-file lists live under ``files[path].resolved_deps`` /
+    ``external_deps``. ``total_internal_dependencies`` may exceed
+    ``summary.edge_count`` when the parser lists the same dep more than once.
+    """
+    analyses = result.analyses.values()
+    return {
         "class_count": sum(len(a.classes) for a in analyses),
         # Module-level functions only (methods live under classes).
         "function_count": sum(len(a.functions) for a in analyses),
-        # Raw reference counts from the parser (may exceed unique edges).
-        "internal_dependency_count": sum(len(a.resolved_deps) for a in analyses),
-        "external_dependency_count": sum(len(a.external_deps) for a in analyses),
+        "total_internal_dependencies": sum(len(a.resolved_deps) for a in analyses),
+        "total_external_dependencies": sum(len(a.external_deps) for a in analyses),
     }
 
 
@@ -198,18 +207,17 @@ def build_cycles(cycles: CircularDependencyResult) -> dict[str, Any]:
     }
 
 
-def build_analysis(
-    result: PipelineResult,
-    *,
-    top_n: int = DEFAULT_TOP_N,
-) -> dict[str, Any]:
-    """Algorithm outputs. Add future keys here (impact_analysis, communities, …)."""
-    scores = result.scores
+def build_analysis(result: PipelineResult) -> dict[str, Any]:
+    """Algorithm outputs. Add future keys here (impact_analysis, communities, …).
+
+    ``scores`` is the full ranked list (criticality desc, then path). Consumers
+    take the first N entries for a "top critical" view; use ``ScoringResult.top(n)``
+    in Python or slice in clients. HTTP APIs can add ``?top=N`` later.
+    """
     return {
         "cycles": build_cycles(result.cycles),
         # Ordered list: index 0 is most critical (ranking is intentional).
-        "scores": [node_score_to_dict(s) for s in scores.scores],
-        "top_critical": [node_score_to_dict(s) for s in scores.top(top_n)],
+        "scores": [node_score_to_dict(s) for s in result.scores.scores],
     }
 
 
@@ -227,24 +235,25 @@ def build_files(analyses: dict[str, FileAnalysis]) -> dict[str, Any]:
 def pipeline_result_to_dict(
     result: PipelineResult,
     *,
-    top_n: int = DEFAULT_TOP_N,
     include_files: bool = True,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Full analysis payload for JSON export or future API responses.
 
     Top-level keys (stable order for readability):
-        metadata — generated_at
-        summary  — cheap counts
-        graph    — nodes + edges (structure only)
-        analysis — cycles, scores, top_critical (+ future algorithms)
-        files    — optional path → FileAnalysis (omit for a smaller file)
+        metadata   — generated_at
+        summary    — graph-level counts (files, nodes, edges, cycles)
+        statistics — parser / source-code counts (classes, functions, deps)
+        graph      — nodes + edges (structure only)
+        analysis   — cycles, scores (+ future algorithms)
+        files      — optional path → FileAnalysis (omit for a smaller file)
     """
     payload: dict[str, Any] = {
         "metadata": build_metadata(generated_at=generated_at),
         "summary": build_summary(result),
+        "statistics": build_statistics(result),
         "graph": build_graph(result.graph),
-        "analysis": build_analysis(result, top_n=top_n),
+        "analysis": build_analysis(result),
     }
     if include_files:
         payload["files"] = build_files(result.analyses)
@@ -255,14 +264,12 @@ def pipeline_result_to_json(
     result: PipelineResult,
     *,
     indent: int | None = 2,
-    top_n: int = DEFAULT_TOP_N,
     include_files: bool = True,
     generated_at: datetime | None = None,
 ) -> str:
     """Serialize PipelineResult to a JSON string."""
     data = pipeline_result_to_dict(
         result,
-        top_n=top_n,
         include_files=include_files,
         generated_at=generated_at,
     )
@@ -274,7 +281,6 @@ def write_pipeline_json(
     path: str | Path,
     *,
     indent: int | None = 2,
-    top_n: int = DEFAULT_TOP_N,
     include_files: bool = True,
     generated_at: datetime | None = None,
 ) -> Path:
@@ -284,7 +290,6 @@ def write_pipeline_json(
     text = pipeline_result_to_json(
         result,
         indent=indent,
-        top_n=top_n,
         include_files=include_files,
         generated_at=generated_at,
     )

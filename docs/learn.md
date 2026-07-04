@@ -713,7 +713,7 @@ print(ast.dump(tree, indent=2))
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 61 tests
+PYTHONPATH=. pytest tests/ -v                    # all 63 tests
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser only (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder only (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline only (9)
@@ -1218,16 +1218,20 @@ result.write_json("result.json")
 ```json
 {
   "metadata": { "generated_at": "2026-07-04T12:00:00Z" },
-  "summary":  { "file_count", "node_count", "edge_count", "cycle_count",
-                "class_count", "function_count",
-                "internal_dependency_count", "external_dependency_count" },
+  "summary": {
+    "file_count", "node_count", "edge_count", "cycle_count"
+  },
+  "statistics": {
+    "class_count", "function_count",
+    "total_internal_dependencies", "total_external_dependencies"
+  },
   "graph": {
     "nodes": ["path.py", ...],
     "edges": [
       { "source": "a.py", "target": "b.py", "type": "imports" }
     ]
   },
-  "analysis": { "cycles": {...}, "scores": [...], "top_critical": [...] },
+  "analysis": { "cycles": {...}, "scores": [...] },
   "files":    { "path.py": { /* full FileAnalysis */ }, ... }
 }
 ```
@@ -1235,10 +1239,23 @@ result.write_json("result.json")
 | Section | Purpose |
 |---------|---------|
 | **`metadata`** | `generated_at` (UTC ISO-8601) |
-| **`summary`** | Cheap repo stats for dashboards / status UIs |
+| **`summary`** | Graph-level counts (files, nodes, edges, cycles) |
+| **`statistics`** | Parser / source-code counts (classes, functions, **repo-wide** dep totals) |
 | **`graph`** | Structural file import graph only |
 | **`analysis`** | All algorithm outputs (cycles, scores today; more later) |
 | **`files`** | Optional path → full `FileAnalysis` (omit with `--no-files`) |
+
+#### `summary` vs `statistics` vs per-file deps
+
+| Field | Scope | Meaning |
+|-------|--------|---------|
+| **`summary.edge_count`** | Graph | Unique import edges after `GraphBuilder` (deduped) |
+| **`statistics.total_internal_dependencies`** | Whole repo | `sum(len(resolved_deps))` across all files |
+| **`statistics.total_external_dependencies`** | Whole repo | `sum(len(external_deps))` across all files |
+| **`files[path].resolved_deps`** | One file | In-repo files this file imports |
+| **`files[path].external_deps`** | One file | Stdlib / third-party packages this file imports |
+
+`total_*` names make the rollup explicit. Per-file dependency **lists** are only under `files` — `statistics` does not repeat them. `total_internal_dependencies` may be **greater than** `summary.edge_count` if the parser recorded the same internal dep more than once before the graph deduped edges.
 
 #### Why this layout (vs a flat top level)
 
@@ -1248,7 +1265,7 @@ result.write_json("result.json")
 | Nest cycles / scores under **`analysis`** | New algorithms (`impact_analysis`, `communities`, …) add keys *inside* `analysis` without new top-level fields |
 | Rename `analyses` → **`files`** | Keys are file paths; values are per-file parse records |
 | Add **`metadata`** | Provenance (`generated_at`) for API clients |
-| Richer **`summary`** | Counts only — no extra algorithms |
+| Split **`summary`** vs **`statistics`** | Summary = graph; statistics = parsed source (not mixed) |
 | Edges as **`{source, target, type}`** | Self-describing; `type: "imports"` today, later `calls` / `inherits` / `contains` |
 
 **Trade-offs:** Older flat JSON (`nodes` at top level, `analyses`, pair-list edges) is **not** produced anymore — this is a deliberate shape change before the public API freezes.
@@ -1319,6 +1336,14 @@ Same story for **`calls`**: needs call-site extraction and callee resolution, no
 #### Scores stay an ordered list
 
 Ranking is part of the contract (`scores[0]` is most critical). A path→score map would force every client to re-sort.
+
+There is **no** separate `top_critical` field in JSON — it duplicated the first N entries of `scores`. Take the top N in clients:
+
+```javascript
+const top = data.analysis.scores.slice(0, 10);
+```
+
+In Python: `result.scores.top(10)`. The CLI prints the top 10 the same way. A future HTTP API may add `?top=N` to trim the response without baking duplication into the stored schema.
 
 #### `files` stays rich
 
@@ -1512,7 +1537,7 @@ That is why `pytest --collect-only` reports **11** tests in `test_parser.py` eve
 
 ## Testing overview
 
-**61 tests** across six suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+**63 tests** across six suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
 
 This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
 
@@ -1523,7 +1548,7 @@ This section is the **detailed test catalog** — what each file proves and how 
 | Parser | `test_parser.py` | 11 | Unit + integration | `ASTParser` import forms; `parse_repository` walk + resolution |
 | Graph | `test_graph.py` | 9 | Unit | `GraphBuilder` rules via synthetic `FileAnalysis` dicts |
 | Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline`; parse → graph → cycles → scores |
-| Serialize | `test_serialize.py` | 12 | Unit | JSON (`metadata` / `graph` / `analysis` / `files`) |
+| Serialize | `test_serialize.py` | 14 | Unit | JSON (`metadata` / `summary` / `statistics` / `graph` / …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `GraphResult` |
 | Scoring | `tests/algorithms/test_scoring.py` | 12 | Unit | `AlgorithmEngine` on synthetic `GraphResult` |
 

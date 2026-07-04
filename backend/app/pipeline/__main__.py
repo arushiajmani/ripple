@@ -9,7 +9,7 @@ from pathlib import Path
 from app.graph.models import CircularDependencyResult, GraphResult, ScoringResult
 from app.pipeline import AnalysisPipeline, PipelineResult
 
-# How many highest-criticality files to print / put in top_critical JSON.
+# How many highest-criticality files to print on the CLI (JSON uses full scores list).
 TOP_CRITICAL = 10
 RULE = "─" * 64
 
@@ -128,7 +128,6 @@ def main(argv: list[str] | None = None) -> None:
     if args.json is not None:
         out = result.write_json(
             args.json,
-            top_n=TOP_CRITICAL,
             include_files=not args.no_files,
         )
         _section("JSON export")

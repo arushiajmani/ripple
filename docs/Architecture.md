@@ -88,7 +88,7 @@ ripple/
 │   │   ├── pipeline/           # Component 4: Orchestration
 │   │   │   ├── __init__.py
 │   │   │   ├── pipeline.py     # AnalysisPipeline (parse → graph → cycles → scores)
-│   │   │   └── serialize.py    # JSON export (metadata/graph/analysis/files)
+│   │   │   └── serialize.py    # JSON export (metadata/summary/statistics/graph/…)
 │   │   ├── benchmark.py        # CLI: python -m app.benchmark --repo <path>
 │   │   │
 │   │   ├── api/                # Component 5: HTTP layer
@@ -155,11 +155,11 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 | Parser | `tests/test_parser.py` | 11 | `ASTParser`, `parse_repository` — no graph |
 | Graph | `tests/test_graph.py` | 9 | `GraphBuilder` — synthetic `FileAnalysis`, no parser |
 | Pipeline | `tests/test_pipeline.py` | 9 | `AnalysisPipeline` — parse → graph → cycles → scores |
-| Serialize | `tests/test_serialize.py` | 12 | JSON (`metadata` / `graph` / `analysis` / `files`) |
+| Serialize | `tests/test_serialize.py` | 14 | JSON (`metadata` / `summary` / `statistics` / `graph` / …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `GraphResult` only |
 | Scoring | `tests/algorithms/test_scoring.py` | 12 | `AlgorithmEngine` — PageRank, betweenness, criticality |
 
-**61 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
+**63 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
 
 - **Quick commands:** [README — Tests](../README.md#tests)
 - **Full catalog (every test name):** [learn.md — Testing overview](./learn.md#testing-overview)
@@ -457,8 +457,9 @@ class GraphResult:
     nodes: List[NodeScore]
     edges: List[Tuple[str, str]]    # (source, target) file path pairs
     cycles: List[List[str]]         # Each cycle is a list of file paths
-    top_critical: List[NodeScore]   # Top 10 by criticality score
 ```
+
+Top critical files: use `ScoringResult.top(n)` in Python or `analysis.scores.slice(0, n)` in JSON clients — not a separate field.
 
 ### PostgreSQL Schema
 
@@ -598,9 +599,11 @@ Response 200:
   ],
   "cycles": [
     ["auth/session.py", "auth/user.py", "auth/permissions.py"]
-  ],
-  "top_critical": [ /* top 10 nodes by criticality_score */ ]
+  ]
 }
+```
+
+`scores` is a separate ordered list in the export schema (`analysis.scores`); top N = first N entries. Future `GET /api/graph/{repo_id}?top=10` may slice at the HTTP layer.
 
 Response 404: repo not found
 Response 409: analysis not yet complete
