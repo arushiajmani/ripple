@@ -1,0 +1,250 @@
+"""Serialize PipelineResult to an API-friendly JSON document.
+
+This module is the only place that defines the public analysis JSON shape.
+Business logic (parser, graph, algorithms, pipeline) stays free of JSON concerns.
+
+Schema (v1) — hierarchical so future analyses extend ``analysis`` without
+new top-level keys:
+
+    {
+      "metadata": { "created_at" },
+      "summary":  { counts / cheap repo stats },
+      "graph":    { "nodes", "edges" },
+      "analysis": { "cycles", "scores", "top_critical", ...future... },
+      "files":    { path → FileAnalysis fields }   # optional
+    }
+
+Design notes:
+* **Nodes stay path strings** in V1 — the file graph identity *is* the path;
+  scores and files already carry rich per-node data. Object nodes
+  ``{"id", "type": "file"}`` can wait until multi-graph types share one payload.
+* **Scores stay an ordered list** — ranking is part of the contract; clients
+  iterate top-to-bottom without re-sorting.
+* **Edges are [importer, imported] lists** — JSON has no tuples.
+* **Deterministic ordering** — sorted file keys; scores already criticality-desc.
+
+Usage:
+    data = pipeline_result_to_dict(result)
+    write_pipeline_json(result, "result.json")
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from app.graph.models import (
+    CircularDependencyResult,
+    GraphResult,
+    NodeScore,
+    ScoringResult,
+)
+from app.parser.models import (
+    ClassInfo,
+    FileAnalysis,
+    FunctionInfo,
+    ImportInfo,
+)
+from app.pipeline.pipeline import PipelineResult
+
+# Default number of files in analysis.top_critical.
+DEFAULT_TOP_N = 10
+
+
+# --- Small field serializers (parser / graph models → plain dicts) ---
+
+
+def import_info_to_dict(item: ImportInfo) -> dict[str, Any]:
+    return {
+        "module": item.module,
+        "type": item.type,
+        "alias": item.alias,
+        "name": item.name,
+        "display": item.display,
+    }
+
+
+def class_info_to_dict(item: ClassInfo) -> dict[str, Any]:
+    return {
+        "name": item.name,
+        "bases": list(item.bases),
+        "methods": list(item.methods),
+    }
+
+
+def function_info_to_dict(item: FunctionInfo) -> dict[str, Any]:
+    return {
+        "name": item.name,
+        "parent_class": item.parent_class,
+    }
+
+
+def file_analysis_to_dict(analysis: FileAnalysis) -> dict[str, Any]:
+    """Full FileAnalysis — kept rich for future class/function/call graphs."""
+    return {
+        "file_path": analysis.file_path,
+        "imports": [import_info_to_dict(i) for i in analysis.imports],
+        "resolved_deps": list(analysis.resolved_deps),
+        "external_deps": list(analysis.external_deps),
+        "classes": [class_info_to_dict(c) for c in analysis.classes],
+        "functions": [function_info_to_dict(f) for f in analysis.functions],
+        "methods": [function_info_to_dict(m) for m in analysis.methods],
+        "line_count": analysis.line_count,
+        "has_syntax_error": analysis.has_syntax_error,
+    }
+
+
+def node_score_to_dict(score: NodeScore) -> dict[str, Any]:
+    """Per-file metrics (see NodeScore / learn.md glossary)."""
+    return {
+        "file_path": score.file_path,
+        "pagerank": score.pagerank,
+        "betweenness": score.betweenness,
+        "criticality": score.criticality,
+        "in_degree": score.in_degree,
+        "out_degree": score.out_degree,
+    }
+
+
+# --- Section builders ---
+
+
+def build_metadata(*, created_at: datetime | None = None) -> dict[str, Any]:
+    """When this document was produced (UTC ISO-8601)."""
+    when = created_at or datetime.now(timezone.utc)
+    # Stable Z suffix for UTC (easier for clients than +00:00).
+    timestamp = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"created_at": timestamp}
+
+
+def build_summary(result: PipelineResult) -> dict[str, Any]:
+    """Cheap repository statistics (no extra graph algorithms)."""
+    analyses = result.analyses.values()
+    return {
+        "file_count": len(result.analyses),
+        "node_count": len(result.graph.nodes),
+        "edge_count": len(result.graph.edges),
+        "cycle_count": result.cycles.cycle_count,
+        "class_count": sum(len(a.classes) for a in analyses),
+        # Module-level functions only (methods live under classes).
+        "function_count": sum(len(a.functions) for a in analyses),
+        # Raw reference counts from the parser (may exceed unique edges).
+        "internal_dependency_count": sum(len(a.resolved_deps) for a in analyses),
+        "external_dependency_count": sum(len(a.external_deps) for a in analyses),
+    }
+
+
+def build_graph(graph: GraphResult) -> dict[str, Any]:
+    """Structural file import graph.
+
+    Nodes are path strings in V1 (identity = path). Edges are
+    [importer, imported] lists for JSON compatibility.
+    """
+    return {
+        "nodes": list(graph.nodes),
+        "edges": [[source, target] for source, target in graph.edges],
+    }
+
+
+def build_cycles(cycles: CircularDependencyResult) -> dict[str, Any]:
+    return {
+        "has_cycles": cycles.has_cycles,
+        "cycle_count": cycles.cycle_count,
+        "cycles": [list(cycle) for cycle in cycles.cycles],
+    }
+
+
+def build_analysis(
+    result: PipelineResult,
+    *,
+    top_n: int = DEFAULT_TOP_N,
+) -> dict[str, Any]:
+    """Algorithm outputs. Add future keys here (impact_analysis, communities, …)."""
+    scores = result.scores
+    return {
+        "cycles": build_cycles(result.cycles),
+        # Ordered list: index 0 is most critical (ranking is intentional).
+        "scores": [node_score_to_dict(s) for s in scores.scores],
+        "top_critical": [node_score_to_dict(s) for s in scores.top(top_n)],
+    }
+
+
+def build_files(analyses: dict[str, FileAnalysis]) -> dict[str, Any]:
+    """Path → full FileAnalysis; keys sorted for stable diffs."""
+    return {
+        path: file_analysis_to_dict(analyses[path])
+        for path in sorted(analyses)
+    }
+
+
+# --- Public entry points ---
+
+
+def pipeline_result_to_dict(
+    result: PipelineResult,
+    *,
+    top_n: int = DEFAULT_TOP_N,
+    include_files: bool = True,
+    created_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Full analysis payload for JSON export or future API responses.
+
+    Top-level keys (stable order for readability):
+        metadata — created_at
+        summary  — cheap counts
+        graph    — nodes + edges (structure only)
+        analysis — cycles, scores, top_critical (+ future algorithms)
+        files    — optional path → FileAnalysis (omit for a smaller file)
+    """
+    payload: dict[str, Any] = {
+        "metadata": build_metadata(created_at=created_at),
+        "summary": build_summary(result),
+        "graph": build_graph(result.graph),
+        "analysis": build_analysis(result, top_n=top_n),
+    }
+    if include_files:
+        payload["files"] = build_files(result.analyses)
+    return payload
+
+
+def pipeline_result_to_json(
+    result: PipelineResult,
+    *,
+    indent: int | None = 2,
+    top_n: int = DEFAULT_TOP_N,
+    include_files: bool = True,
+    created_at: datetime | None = None,
+) -> str:
+    """Serialize PipelineResult to a JSON string."""
+    data = pipeline_result_to_dict(
+        result,
+        top_n=top_n,
+        include_files=include_files,
+        created_at=created_at,
+    )
+    return json.dumps(data, indent=indent, ensure_ascii=False) + "\n"
+
+
+def write_pipeline_json(
+    result: PipelineResult,
+    path: str | Path,
+    *,
+    indent: int | None = 2,
+    top_n: int = DEFAULT_TOP_N,
+    include_files: bool = True,
+    created_at: datetime | None = None,
+) -> Path:
+    """Write analysis JSON to disk; returns the resolved path."""
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    text = pipeline_result_to_json(
+        result,
+        indent=indent,
+        top_n=top_n,
+        include_files=include_files,
+        created_at=created_at,
+    )
+    out.write_text(text, encoding="utf-8")
+    return out.resolve()

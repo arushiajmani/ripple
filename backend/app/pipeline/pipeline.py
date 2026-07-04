@@ -9,6 +9,7 @@ CLI: python -m app.pipeline <repo-path>
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from app.graph.algorithms.cycles import CycleDetector
@@ -29,12 +30,72 @@ class PipelineResult:
 
     scores: per-file pagerank (depended-on), betweenness (bridge), criticality
     (change-risk rank), in/out degree — see NodeScore / learn.md glossary.
+
+    JSON export (lazy-imports serialize helpers to avoid circular imports):
+        result.to_dict() / result.to_json() / result.write_json("result.json")
     """
 
     analyses: dict[str, FileAnalysis]
     graph: GraphResult
     cycles: CircularDependencyResult
     scores: ScoringResult
+
+    def to_dict(
+        self,
+        *,
+        top_n: int = 10,
+        include_files: bool = True,
+        created_at: datetime | None = None,
+    ) -> dict:
+        """JSON-ready dict (metadata, summary, graph, analysis, files)."""
+        from app.pipeline.serialize import pipeline_result_to_dict
+
+        return pipeline_result_to_dict(
+            self,
+            top_n=top_n,
+            include_files=include_files,
+            created_at=created_at,
+        )
+
+    def to_json(
+        self,
+        *,
+        indent: int | None = 2,
+        top_n: int = 10,
+        include_files: bool = True,
+        created_at: datetime | None = None,
+    ) -> str:
+        """Serialize this result to a JSON string."""
+        from app.pipeline.serialize import pipeline_result_to_json
+
+        return pipeline_result_to_json(
+            self,
+            indent=indent,
+            top_n=top_n,
+            include_files=include_files,
+            created_at=created_at,
+        )
+
+    def write_json(
+        self,
+        path: str | Path,
+        *,
+        indent: int | None = 2,
+        top_n: int = 10,
+        include_files: bool = True,
+        created_at: datetime | None = None,
+    ) -> Path:
+        """Write analysis JSON to ``path``; returns the resolved path."""
+        from app.pipeline.serialize import write_pipeline_json
+
+        return write_pipeline_json(
+            self,
+            path,
+            indent=indent,
+            top_n=top_n,
+            include_files=include_files,
+            created_at=created_at,
+        )
 
 
 class AnalysisPipeline:

@@ -13,7 +13,8 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 * **Cycle detection** — `CycleDetector` finds circular dependencies via NetworkX (`graph/algorithms/cycles.py`)
 * **Criticality scoring** — `AlgorithmEngine`: PageRank (how depended-on), betweenness (bridge/bottleneck), criticality (`0.6 * norm(PR) + 0.4 * norm(BT)` risk rank), in/out degree
 * **Analysis pipeline** — parse → graph → cycles → scores (`PipelineResult`)
-* **CLI** — parser: `python -m app.parser.cli`; pipeline: `python -m app.pipeline` (prints top critical files)
+* **JSON export** — `result.write_json("result.json")` or `python -m app.pipeline <repo> --json result.json`
+* **CLI** — parser: `python -m app.parser.cli`; pipeline: `python -m app.pipeline` (report + optional JSON)
 
 ### Planned (near term)
 
@@ -102,7 +103,8 @@ ripple/
 │   │   │   └── builder.py       # GraphBuilder
 │   │   └── pipeline/
 │   │       ├── pipeline.py      # AnalysisPipeline (parse → graph → cycles → scores)
-│   │       └── __main__.py      # python -m app.pipeline
+│   │       ├── serialize.py     # PipelineResult → JSON
+│   │       └── __main__.py      # python -m app.pipeline [--json PATH]
 │   └── tests/
 │       ├── sample_file.py       # single file to try the parser on
 │       ├── test_parser.py       # parser tests (11)
@@ -248,7 +250,8 @@ Run parse → graph → cycles → scores in one step:
 ```bash
 python -m app.pipeline tests/fixtures/mini_repo
 # sections: Summary | Dependency edges | Circular dependencies | Top critical files
-# (aligned table: crit / pr / btw / in / out + legend)
+python -m app.pipeline tests/fixtures/mini_repo --json result.json
+python -m app.pipeline tests/fixtures/mini_repo --json result.json --no-files
 ```
 
 ```python
@@ -260,6 +263,9 @@ result.graph      # GraphResult (nodes + edges)
 result.cycles     # CircularDependencyResult
 result.scores     # ScoringResult (sorted by criticality)
 result.scores.top(10)  # highest-criticality NodeScore list
+# JSON: metadata, summary, graph, analysis, files
+result.write_json("result.json")
+```
 # NodeScore fields:
 #   pagerank     — how depended-on (importance flows to shared modules)
 #   betweenness  — bridge / bottleneck on paths between other files
@@ -289,10 +295,11 @@ From `backend/` (requires `PYTHONPATH=.` so Python finds the `app` package):
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 49 tests (-v = verbose, one line per test)
+PYTHONPATH=. pytest tests/ -v                    # all 61 tests (-v = verbose, one line per test)
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
+PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (12)
 PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (12)
 ```
 
@@ -301,6 +308,7 @@ PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (12)
 | **`test_parser.py`** | 11 | Import forms (parametrized), `__future__` / syntax edge cases, `mini_repo` integration |
 | **`test_graph.py`** | 9 | Empty/single-node graphs; dependency edges; dedup; missing deps; cycles; self-loops; dict-key semantics; syntax-error files |
 | **`test_pipeline.py`** | 9 | End-to-end parse → graph → cycles → scores; `test_small_cycle`; `mini_repo` integration |
+| **`test_serialize.py`** | 12 | metadata, graph, analysis, files; optional `files`; stable ordering |
 | **`test_cycles.py`** | 8 | `CycleDetector`: empty/acyclic graphs, simple cycles, self-loops, disjoint cycles, normalization |
 | **`test_scoring.py`** | 12 | `AlgorithmEngine`: normalize, PageRank fan-in, betweenness bridge, criticality weights, `top()` |
 
@@ -346,5 +354,6 @@ npm run dev
 * [x] `AnalysisPipeline` — parser → graph → cycles → scores
 * [x] Pipeline tests (`tests/test_pipeline.py`, 9 cases)
 * [x] `AlgorithmEngine` — PageRank, betweenness, criticality (`test_scoring.py`, 12 cases)
+* [x] JSON export — `serialize.py`, `--json PATH` (`test_serialize.py`)
 * [ ] `IngestionService` (zip upload, filters)
 * [ ] Pipeline stage metrics and benchmark CLI

@@ -87,7 +87,8 @@ ripple/
 │   │   │
 │   │   ├── pipeline/           # Component 4: Orchestration
 │   │   │   ├── __init__.py
-│   │   │   └── pipeline.py     # AnalysisPipeline (parse → graph → cycles → scores)
+│   │   │   ├── pipeline.py     # AnalysisPipeline (parse → graph → cycles → scores)
+│   │   │   └── serialize.py    # JSON export (metadata/graph/analysis/files)
 │   │   ├── benchmark.py        # CLI: python -m app.benchmark --repo <path>
 │   │   │
 │   │   ├── api/                # Component 5: HTTP layer
@@ -154,10 +155,11 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 | Parser | `tests/test_parser.py` | 11 | `ASTParser`, `parse_repository` — no graph |
 | Graph | `tests/test_graph.py` | 9 | `GraphBuilder` — synthetic `FileAnalysis`, no parser |
 | Pipeline | `tests/test_pipeline.py` | 9 | `AnalysisPipeline` — parse → graph → cycles → scores |
+| Serialize | `tests/test_serialize.py` | 12 | JSON (`metadata` / `graph` / `analysis` / `files`) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `GraphResult` only |
 | Scoring | `tests/algorithms/test_scoring.py` | 12 | `AlgorithmEngine` — PageRank, betweenness, criticality |
 
-**49 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
+**61 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
 
 - **Quick commands:** [README — Tests](../README.md#tests)
 - **Full catalog (every test name):** [learn.md — Testing overview](./learn.md#testing-overview)

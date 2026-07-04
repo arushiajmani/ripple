@@ -654,7 +654,7 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 
 ### Verification (how to test requirements)
 
-Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**49 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests).
+Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**61 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests).
 
 
 | Requirement                            | Status          | Verified by                                                                     |
@@ -707,9 +707,9 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**49 tes
 - [x] Wire parse → graph → cycles → scores in `AnalysisPipeline`
 - [ ] Wire full pipeline with pipeline stage instrumentation
 - [ ] Add benchmark CLI: `python -m app.benchmark --repo path/to/project`
-- [ ] Output results as JSON file
+- [x] Output results as JSON file — `PipelineResult.write_json()` / `--json PATH`
 - [ ] Test against 3 different real Python repos
-- [ ] Milestone: end-to-end CLI produces a valid `result.json` with scores and cycles
+- [x] Milestone: CLI produces `result.json` with nodes, edges, scores, and cycles (`--json`)
 
 *At the end of Phase 1, the hard work is done. Everything after this is presentation.*
 

@@ -47,7 +47,8 @@
 | `AnalysisPipeline` in `backend/app/pipeline/pipeline.py` | Yes |
 | Wire `parse_repository` → `GraphBuilder` | Yes |
 | `PipelineResult` (`analyses` + `graph` + `cycles` + `scores`) | Yes |
-| CLI: `python -m app.pipeline <repo-path>` | Yes (prints top critical files) |
+| CLI: `python -m app.pipeline <repo-path> [--json PATH]` | Yes (prints report; optional JSON file) |
+| JSON serialize (`serialize.py`, `to_dict` / `write_json`) | Yes |
 | Unit tests in `tests/test_pipeline.py` | Yes (9 cases) |
 | Wire `CycleDetector` into pipeline | Yes |
 | Wire `AlgorithmEngine` into pipeline | Yes |
@@ -710,7 +711,7 @@ print(ast.dump(tree, indent=2))
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 49 tests
+PYTHONPATH=. pytest tests/ -v                    # all 61 tests
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser only (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder only (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline only (9)
@@ -986,7 +987,7 @@ Without this, the UI and tests would see the same circular dependency multiple t
 
 **Deterministic order.** Cycles are sorted by length, then by path list, so output is stable across runs.
 
-**In the pipeline.** `AnalysisPipeline.run()` calls `CycleDetector` after `GraphBuilder` and sets `PipelineResult.cycles`. The pipeline CLI prints circular dependencies when any exist. API/JSON persistence is still future work.
+**In the pipeline.** `AnalysisPipeline.run()` calls `CycleDetector` after `GraphBuilder` and sets `PipelineResult.cycles`. The pipeline CLI prints circular dependencies; JSON export includes `cycles` via `result.write_json()` / `--json`.
 
 ### 6. Test cases (`test_cycles.py`)
 
@@ -1009,7 +1010,7 @@ PYTHONPATH=. pytest tests/algorithms/test_cycles.py -v
 | `test_detect_deduplicates_rotations` | A→B→A is **one** cycle, not two rotations |
 | `test_run_matches_detect` | `run()` and `detect()` return the same result (alias) |
 
-**What these tests deliberately skip:** API/JSON output, frontend cycle warnings, PageRank/scoring. Pipeline integration of cycles is covered in `test_pipeline.py` (`test_small_cycle`).
+**What these tests deliberately skip:** API/DB persistence, frontend cycle warnings. Pipeline integration is in `test_pipeline.py`; JSON shape is in `test_serialize.py`.
 
 Also listed under [Testing overview — Cycle detection tests](#cycle-detection-tests-test_cyclespy--full-list).
 
@@ -1191,14 +1192,85 @@ AlgorithmEngine().score(graph)
 PipelineResult(analyses, graph, cycles, scores)
 ```
 
-CLI: `python -m app.pipeline <repo-path>` (directory only today). Prints file/node/edge/cycle counts, edges, circular dependencies, and **top critical files**.
+CLI: `python -m app.pipeline <repo-path> [--json PATH] [--no-files]` (directory only today). Prints **Summary**, **Dependency edges**, **Circular dependencies**, **Top critical files** (aligned table), and optionally writes JSON.
 
 ```bash
 cd backend
 python -m app.pipeline tests/fixtures/mini_repo
+python -m app.pipeline tests/fixtures/mini_repo --json result.json
+python -m app.pipeline tests/fixtures/mini_repo --json result.json --no-files  # omit files map
 ```
 
-Prints sections: **Summary**, **Dependency edges**, **Circular dependencies**, **Top critical files** (aligned table with `crit` / `pr` / `btw` / `in` / `out` and a short legend).
+### JSON export
+
+Serialization lives only in `app/pipeline/serialize.py` — not in the parser, graph algorithms, or pipeline orchestration. That keeps the public document shape free to evolve without touching business logic.
+
+```python
+result = AnalysisPipeline().run("tests/fixtures/mini_repo")
+result.write_json("result.json")
+# or: data = result.to_dict(include_files=False)
+```
+
+#### Document shape
+
+```json
+{
+  "metadata": { "created_at": "2026-07-04T12:00:00Z" },
+  "summary":  { "file_count", "node_count", "edge_count", "cycle_count",
+                "class_count", "function_count",
+                "internal_dependency_count", "external_dependency_count" },
+  "graph":    { "nodes": ["path.py", ...], "edges": [["a.py", "b.py"], ...] },
+  "analysis": { "cycles": {...}, "scores": [...], "top_critical": [...] },
+  "files":    { "path.py": { /* full FileAnalysis */ }, ... }
+}
+```
+
+| Section | Purpose |
+|---------|---------|
+| **`metadata`** | `created_at` (UTC ISO-8601) |
+| **`summary`** | Cheap repo stats for dashboards / status UIs |
+| **`graph`** | Structural file import graph only |
+| **`analysis`** | All algorithm outputs (cycles, scores today; more later) |
+| **`files`** | Optional path → full `FileAnalysis` (omit with `--no-files`) |
+
+#### Why this layout (vs a flat top level)
+
+| Change | Why |
+|--------|-----|
+| Nest `nodes` / `edges` under **`graph`** | Structure is one concern; scores are not part of the graph payload |
+| Nest cycles / scores under **`analysis`** | New algorithms (`impact_analysis`, `communities`, …) add keys *inside* `analysis` without new top-level fields |
+| Rename `analyses` → **`files`** | Keys are file paths; values are per-file parse records |
+| Add **`metadata`** | Provenance (`created_at`) for API clients |
+| Richer **`summary`** | Counts only — no extra algorithms |
+
+**Trade-offs:** Older flat JSON (`nodes` at top level, `analyses`) is **not** produced anymore — this is a deliberate shape change before the public API freezes.
+
+#### Nodes stay path strings (V1)
+
+```json
+"nodes": ["myapp/models.py", "myapp/auth.py"]
+```
+
+Not `{ "id", "type": "file" }` yet. Path *is* the node identity for the file graph; `analysis.scores` and `files` already carry rich per-node data. Object nodes become useful when one payload mixes file / class / function graphs — defer until then.
+
+#### Scores stay an ordered list
+
+Ranking is part of the contract (`scores[0]` is most critical). A path→score map would force every client to re-sort.
+
+#### `files` stays rich
+
+Every `FileAnalysis` field is exported (`imports`, `resolved_deps`, `external_deps`, `classes`, `functions`, `methods`, `line_count`, `has_syntax_error`) so future builders (class graph, function graph, call graph) can consume the same document without reparsing.
+
+#### Future extensions (no top-level churn)
+
+| Addition | Where it goes |
+|----------|----------------|
+| Class / function / call graphs | New top-level keys like `class_graph`, *or* `graphs: { "file": ..., "class": ... }` in a later schema version |
+| Impact analysis | `analysis.impact_analysis` |
+| Communities / SCCs / shortest paths | `analysis.communities`, etc. |
+| AI explanations | `analysis.explanations` or a sibling `insights` section in v2 |
+
+Score field meanings: [What each property means](#1-what-each-property-means).
 
 ### Tests (`test_pipeline.py`)
 
@@ -1294,7 +1366,7 @@ No special test class or boilerplate — plain functions and `assert`.
 tests/test_parser.py::test_external_import_forms[absolute] PASSED
 tests/test_parser.py::test_external_import_forms[from_import] PASSED
 ...
-======================== 49 passed in 0.90s ========================
+======================== 61 passed in 1.0s ========================
 ```
 
 Parametrized tests (see below) show the case name in brackets, e.g. `[absolute]`, `[from_import]`.
@@ -1375,7 +1447,7 @@ That is why `pytest --collect-only` reports **11** tests in `test_parser.py` eve
 
 ## Testing overview
 
-**49 tests** across five suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+**61 tests** across six suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
 
 This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
 
@@ -1386,6 +1458,7 @@ This section is the **detailed test catalog** — what each file proves and how 
 | Parser | `test_parser.py` | 11 | Unit + integration | `ASTParser` import forms; `parse_repository` walk + resolution |
 | Graph | `test_graph.py` | 9 | Unit | `GraphBuilder` rules via synthetic `FileAnalysis` dicts |
 | Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline`; parse → graph → cycles → scores |
+| Serialize | `test_serialize.py` | 12 | Unit | JSON (`metadata` / `graph` / `analysis` / `files`) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `GraphResult` |
 | Scoring | `tests/algorithms/test_scoring.py` | 12 | Unit | `AlgorithmEngine` on synthetic `GraphResult` |
 
@@ -1393,6 +1466,7 @@ This section is the **detailed test catalog** — what each file proves and how 
 test_parser.py     →  ASTParser / parse_repository  →  FileAnalysis
 test_graph.py      →  GraphBuilder                  →  GraphResult     (no parser)
 test_pipeline.py   →  AnalysisPipeline              →  PipelineResult  (parse + graph + cycles + scores)
+test_serialize.py  →  PipelineResult.to_dict/write_json → JSON
 test_cycles.py     →  CycleDetector                 →  CircularDependencyResult
 test_scoring.py    →  AlgorithmEngine               →  ScoringResult
 ```

@@ -1,14 +1,15 @@
-"""CLI entry: python -m app.pipeline <repo-path>"""
+"""CLI entry: python -m app.pipeline <repo-path> [--json PATH]"""
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
 from app.graph.models import CircularDependencyResult, GraphResult, ScoringResult
 from app.pipeline import AnalysisPipeline, PipelineResult
 
-# How many highest-criticality files to print.
+# How many highest-criticality files to print / put in top_critical JSON.
 TOP_CRITICAL = 10
 RULE = "─" * 64
 
@@ -86,12 +87,33 @@ def _print_top_critical(scores: ScoringResult) -> None:
     print("  out  = # project files this file imports")
 
 
-def main() -> None:
-    if len(sys.argv) < 2:
-        print("Usage: python -m app.pipeline <repo-path>", file=sys.stderr)
-        sys.exit(1)
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m app.pipeline",
+        description="Run parse → graph → cycles → scores on a project directory.",
+    )
+    parser.add_argument(
+        "repo_path",
+        type=Path,
+        help="Project root directory (not a package subfolder)",
+    )
+    parser.add_argument(
+        "--json",
+        metavar="PATH",
+        type=Path,
+        help="Write full analysis JSON to PATH (e.g. result.json)",
+    )
+    parser.add_argument(
+        "--no-files",
+        action="store_true",
+        help="Omit per-file parse data (files) from JSON (smaller file)",
+    )
+    return parser.parse_args(argv)
 
-    repo_path = Path(sys.argv[1]).resolve()
+
+def main(argv: list[str] | None = None) -> None:
+    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    repo_path = args.repo_path.resolve()
     if not repo_path.is_dir():
         print(f"Not a directory: {repo_path}", file=sys.stderr)
         sys.exit(1)
@@ -102,6 +124,16 @@ def main() -> None:
     _print_edges(result.graph)
     _print_cycles(result.cycles)
     _print_top_critical(result.scores)
+
+    if args.json is not None:
+        out = result.write_json(
+            args.json,
+            top_n=TOP_CRITICAL,
+            include_files=not args.no_files,
+        )
+        _section("JSON export")
+        print(f"  wrote  {out}")
+
     print()
 
 

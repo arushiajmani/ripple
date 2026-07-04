@@ -97,7 +97,7 @@ Run `python -m app.parser.cli path/to/any_file.py` and see correctly extracted i
 - [x] Detect circular dependencies (`nx.simple_cycles`) — `CycleDetector` in `graph/algorithms/cycles.py`, wired into `AnalysisPipeline` as `PipelineResult.cycles`
 - [x] Compute in-degree and out-degree for each node — on `NodeScore`
 - [x] Write unit tests using small synthetic graphs (5–10 nodes) with known correct answers — `test_graph.py`, `test_cycles.py`, `test_scoring.py`, `test_pipeline.py`
-- [ ] Serialize graph results to JSON
+- [x] Serialize graph results to JSON — `metadata` / `summary` / `graph` / `analysis` / `files`
 
 #### Milestone Check
 
@@ -105,7 +105,7 @@ Graph structure, cycles, and criticality scores:
 
 ```bash
 PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ tests/test_pipeline.py -v
-python -m app.pipeline tests/fixtures/mini_repo   # Summary, edges, cycles, top-critical table
+python -m app.pipeline tests/fixtures/mini_repo --json result.json
 ```
 
 **Study guides:** [Cycle Detection](./learn.md#phase-1-week-2--cycle-detection) · [Criticality Scoring](./learn.md#phase-1-week-2--criticality-scoring) · [Pipeline](./learn.md#phase-1--analysis-pipeline).
@@ -139,7 +139,7 @@ Full property glossary: [learn.md — What each property means](./learn.md#1-wha
 - [ ] Wire `IngestionService` → `ASTParser` → `GraphBuilder` → `AlgorithmEngine` into a single `AnalysisPipeline` class — partial: `AnalysisPipeline` wires parse → graph → cycles → scores (ingestion pending)
 - [ ] Instrument every pipeline stage with timing: `file_discovery`, `ast_parsing` (total + per-file average), `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization` — timings held on `PipelineResult`
 - [ ] Add benchmark CLI: `python -m app.benchmark --repo path/to/project` — runs the pipeline and prints a formatted timing breakdown to stdout (for performance testing on large repos)
-- [ ] Output complete result as a JSON file
+- [x] Output complete result as a JSON file — `python -m app.pipeline <repo> --json result.json`
 - [ ] Clean up temp directory after analysis
 - [ ] Test end-to-end on 3 different real Python projects of varying sizes
 
