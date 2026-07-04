@@ -89,36 +89,40 @@ Run `python -m app.parser.cli path/to/any_file.py` and see correctly extracted i
 - [x] Implement `GraphBuilder` class in `backend/app/graph/builder.py`
 - [x] Resolve relative imports to absolute file paths using folder structure
 - [x] Handle unresolvable imports gracefully (external packages like `requests`, `numpy` — skip or add as external nodes)
-- [ ] Build `nx.DiGraph` where nodes are file paths and edges are import relationships
-- [ ] Implement `AlgorithmEngine` class in `backend/app/graph/algorithms/` (unified scoring entry point)
-- [ ] Compute PageRank scores (`nx.pagerank`, alpha=0.85)
-- [ ] Compute Betweenness Centrality (`nx.betweenness_centrality`)
-- [ ] Compute composite criticality score: `0.6 * normalized_pagerank + 0.4 * normalized_betweenness`
+- [x] Build `nx.DiGraph` where nodes are file paths and edges are import relationships — via `graph_result_to_digraph`
+- [x] Implement `AlgorithmEngine` class in `backend/app/graph/algorithms/scoring.py`
+- [x] Compute PageRank scores (`nx.pagerank`, alpha=0.85)
+- [x] Compute Betweenness Centrality (`nx.betweenness_centrality`)
+- [x] Compute composite criticality score: `0.6 * normalized_pagerank + 0.4 * normalized_betweenness`
 - [x] Detect circular dependencies (`nx.simple_cycles`) — `CycleDetector` in `graph/algorithms/cycles.py`, wired into `AnalysisPipeline` as `PipelineResult.cycles`
-- [ ] Compute in-degree and out-degree for each node
-- [x] Write unit tests using small synthetic graphs (5–10 nodes) with known correct answers — graph structure + cycle detection (`test_graph.py`, `test_cycles.py`, `test_pipeline.py`); score assertions pending PageRank/betweenness
+- [x] Compute in-degree and out-degree for each node — on `NodeScore`
+- [x] Write unit tests using small synthetic graphs (5–10 nodes) with known correct answers — `test_graph.py`, `test_cycles.py`, `test_scoring.py`, `test_pipeline.py`
 - [ ] Serialize graph results to JSON
 
 #### Milestone Check
 
-Graph structure and cycles (no scoring yet):
+Graph structure, cycles, and criticality scores:
 
 ```bash
 PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ tests/test_pipeline.py -v
-python -m app.pipeline tests/fixtures/mini_repo   # prints 1 cycle (models ↔ utils)
+python -m app.pipeline tests/fixtures/mini_repo   # Summary, edges, cycles, top-critical table
 ```
 
-**CycleDetector study + test catalog:** [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection). **Pipeline:** [learn.md — Analysis Pipeline](./learn.md#phase-1--analysis-pipeline).
-
-When PageRank/betweenness land, re-run analysis on a 20+ file project and confirm top-ranked files match intuition.
+**Study guides:** [Cycle Detection](./learn.md#phase-1-week-2--cycle-detection) · [Criticality Scoring](./learn.md#phase-1-week-2--criticality-scoring) · [Pipeline](./learn.md#phase-1--analysis-pipeline).
 
 #### Understanding The Algorithms (For Interviews)
 
-**PageRank:** Iteratively propagates importance along edges. A file is important if many important files import it. Converges when scores stabilize between iterations. The `alpha=0.85` damping factor prevents sink nodes from absorbing all weight.
+Full property glossary: [learn.md — What each property means](./learn.md#1-what-each-property-means).
 
-**Betweenness Centrality:** For every pair of nodes (A, B), find the shortest path between them. Count how many of those paths pass through node X. Normalize by total possible paths. High betweenness = architectural bottleneck / bridge node.
+**PageRank:** Iteratively propagates importance along edges (importer → imported). A file is important if many important files import it. Raw scores sum to ~1.0. The `alpha=0.85` damping factor prevents sink nodes from absorbing all weight.
 
-**Why normalize before combining:** PageRank and Betweenness operate on different scales. PageRank scores sum to 1.0 across the graph. Betweenness scores are much larger for big graphs. Without normalization, betweenness would dominate the composite score regardless of the weight you assign.
+**Betweenness Centrality:** For every pair of nodes (A, B), find the shortest path between them. Count how many of those paths pass through node X. High betweenness = architectural bottleneck / bridge node.
+
+**Criticality:** `0.6 * norm(pagerank) + 0.4 * norm(betweenness)` after min-max normalize. Relative change-risk rank within one repo; used for “top critical files.”
+
+**in_degree / out_degree:** Direct importers of this file / direct imports from this file (in-repo only).
+
+**Why normalize before combining:** PageRank and betweenness use different scales. PageRank sums to 1.0; betweenness can be larger on big graphs. Without normalization, betweenness would dominate regardless of the 0.6 / 0.4 weights.
 
 ---
 
@@ -132,7 +136,7 @@ When PageRank/betweenness land, re-run analysis on a 20+ file project and confir
 - [ ] Accept zip file, extract to temp directory (`/tmp/ripple/{job_id}/`)
 - [x] Walk directory tree, collect all `.py` files — via `parse_repository()` / `collect_python_files()`
 - [x] Filter out virtual environments (`venv/`, `.venv/`, `env/`), build artifacts (`__pycache__/`, `*.pyc`), test files (optional — include for now, filter later) — via `SKIP_DIRS` in `parser/models.py`
-- [ ] Wire `IngestionService` → `ASTParser` → `GraphBuilder` → `AlgorithmEngine` into a single `AnalysisPipeline` class — partial: `AnalysisPipeline` wires parse → graph → cycles
+- [ ] Wire `IngestionService` → `ASTParser` → `GraphBuilder` → `AlgorithmEngine` into a single `AnalysisPipeline` class — partial: `AnalysisPipeline` wires parse → graph → cycles → scores (ingestion pending)
 - [ ] Instrument every pipeline stage with timing: `file_discovery`, `ast_parsing` (total + per-file average), `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization` — timings held on `PipelineResult`
 - [ ] Add benchmark CLI: `python -m app.benchmark --repo path/to/project` — runs the pipeline and prints a formatted timing breakdown to stdout (for performance testing on large repos)
 - [ ] Output complete result as a JSON file

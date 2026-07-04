@@ -11,13 +11,13 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 * **Dependency classification** — internal (`resolved_deps`) vs stdlib/third-party (`external_deps`) when project context is provided
 * **Graph builder** — assemble `dict[str, FileAnalysis]` into a `GraphResult` (nodes + directed import edges)
 * **Cycle detection** — `CycleDetector` finds circular dependencies via NetworkX (`graph/algorithms/cycles.py`)
-* **Analysis pipeline** — `AnalysisPipeline` wires parse → graph → cycles (`PipelineResult.cycles`)
-* **CLI** — parser: `python -m app.parser.cli`; pipeline: `python -m app.pipeline`
+* **Criticality scoring** — `AlgorithmEngine`: PageRank (how depended-on), betweenness (bridge/bottleneck), criticality (`0.6 * norm(PR) + 0.4 * norm(BT)` risk rank), in/out degree
+* **Analysis pipeline** — parse → graph → cycles → scores (`PipelineResult`)
+* **CLI** — parser: `python -m app.parser.cli`; pipeline: `python -m app.pipeline` (prints top critical files)
 
 ### Planned (near term)
 
 * Zip upload ingestion (`IngestionService`)
-* Graph algorithms — PageRank, betweenness, criticality scores (`AlgorithmEngine`)
 * Pipeline stage metrics and benchmark CLI (`python -m app.benchmark --repo path/to/project`)
 * Impact analysis for proposed changes
 * Interactive graph visualization
@@ -48,14 +48,16 @@ GraphResult
     ↓
 CycleDetector             CircularDependencyResult
     ↓
-PipelineResult            analyses + graph + cycles
+AlgorithmEngine           ScoringResult (PageRank, betweenness, criticality)
+    ↓
+PipelineResult            analyses + graph + cycles + scores
 ```
 
 **Parser layer:** `ASTParser`, `FileAnalysis`, RepositoryParser (`parse_repository` in `repository.py`)
 
-**Graph layer:** `GraphBuilder`, `GraphResult`, `CycleDetector`, `CircularDependencyResult`
+**Graph layer:** `GraphBuilder`, `GraphResult`, `CycleDetector`, `AlgorithmEngine`, `ScoringResult`
 
-**Pipeline:** `AnalysisPipeline` orchestrates parse → graph → cycles. `GraphBuilder` currently reads only `resolved_deps`; other `FileAnalysis` fields (`classes`, `functions`, `imports`, `external_deps`, `line_count`, `has_syntax_error`) are preserved for V2 graph builders without reparsing.
+**Pipeline:** `AnalysisPipeline` orchestrates parse → graph → cycles → scores. `GraphBuilder` currently reads only `resolved_deps`; other `FileAnalysis` fields (`classes`, `functions`, `imports`, `external_deps`, `line_count`, `has_syntax_error`) are preserved for V2 graph builders without reparsing.
 
 Full rationale: [Design Decisions](docs/learn.md#design-decisions) · Roadmap: [Future Scope](docs/learn.md#future-scope) · Study guide: [docs/learn.md](docs/learn.md)
 
@@ -99,7 +101,7 @@ ripple/
 │   │   │   ├── models.py        # GraphResult
 │   │   │   └── builder.py       # GraphBuilder
 │   │   └── pipeline/
-│   │       ├── pipeline.py      # AnalysisPipeline (parse → graph → cycles)
+│   │       ├── pipeline.py      # AnalysisPipeline (parse → graph → cycles → scores)
 │   │       └── __main__.py      # python -m app.pipeline
 │   └── tests/
 │       ├── sample_file.py       # single file to try the parser on
@@ -108,7 +110,8 @@ ripple/
 │       ├── test_pipeline.py     # pipeline tests (9)
 │       ├── test_api.py          # API tests (stub)
 │       ├── algorithms/
-│       │   └── test_cycles.py   # cycle detection (8)
+│       │   ├── test_cycles.py   # cycle detection (8)
+│       │   └── test_scoring.py  # PageRank / criticality (12)
 │       └── fixtures/
 │           └── mini_repo/       # cyclic fixture (models ↔ utils)
 ├── frontend/
@@ -240,11 +243,12 @@ Edges run **importer → imported** — e.g. `("myapp/auth.py", "myapp/models.py
 
 ### Pipeline
 
-Run parse → graph → cycle detection in one step:
+Run parse → graph → cycles → scores in one step:
 
 ```bash
 python -m app.pipeline tests/fixtures/mini_repo
-# files / nodes / edges / cycles counts, then edges (and circular_dependencies if any)
+# sections: Summary | Dependency edges | Circular dependencies | Top critical files
+# (aligned table: crit / pr / btw / in / out + legend)
 ```
 
 ```python
@@ -254,10 +258,17 @@ result = AnalysisPipeline().run("tests/fixtures/mini_repo")
 result.analyses   # dict[str, FileAnalysis]
 result.graph      # GraphResult (nodes + edges)
 result.cycles     # CircularDependencyResult
-# result.cycles.has_cycles, result.cycles.cycle_count, result.cycles.cycles
+result.scores     # ScoringResult (sorted by criticality)
+result.scores.top(10)  # highest-criticality NodeScore list
+# NodeScore fields:
+#   pagerank     — how depended-on (importance flows to shared modules)
+#   betweenness  — bridge / bottleneck on paths between other files
+#   criticality  — 0.6 * norm(PR) + 0.4 * norm(BT); relative change-risk
+#   in_degree    — # of project files that import this file
+#   out_degree   — # of project files this file imports
 ```
 
-Study guide: [docs/learn.md — Analysis Pipeline](docs/learn.md#phase-1--analysis-pipeline) · [Cycle Detection](docs/learn.md#phase-1-week-2--cycle-detection)
+Study guide: [What each property means](docs/learn.md#1-what-each-property-means) · [Criticality Scoring](docs/learn.md#phase-1-week-2--criticality-scoring) · [Pipeline](docs/learn.md#phase-1--analysis-pipeline)
 
 ---
 
@@ -278,23 +289,24 @@ From `backend/` (requires `PYTHONPATH=.` so Python finds the `app` package):
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 37 tests (-v = verbose, one line per test)
+PYTHONPATH=. pytest tests/ -v                    # all 49 tests (-v = verbose, one line per test)
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
-PYTHONPATH=. pytest tests/algorithms/ -v         # cycle detection (8)
+PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (12)
 ```
 
 | Suite | Tests | Covers |
 |-------|-------|--------|
 | **`test_parser.py`** | 11 | Import forms (parametrized), `__future__` / syntax edge cases, `mini_repo` integration |
 | **`test_graph.py`** | 9 | Empty/single-node graphs; dependency edges; dedup; missing deps; cycles; self-loops; dict-key semantics; syntax-error files |
-| **`test_pipeline.py`** | 9 | End-to-end parse → graph → cycles; dedup; deterministic ordering; `test_small_cycle`; `mini_repo` integration; non-directory error; missing deps via monkeypatch |
+| **`test_pipeline.py`** | 9 | End-to-end parse → graph → cycles → scores; `test_small_cycle`; `mini_repo` integration |
 | **`test_cycles.py`** | 8 | `CycleDetector`: empty/acyclic graphs, simple cycles, self-loops, disjoint cycles, normalization |
+| **`test_scoring.py`** | 12 | `AlgorithmEngine`: normalize, PageRank fan-in, betweenness bridge, criticality weights, `top()` |
 
-**Fixture:** `tests/fixtures/mini_repo/` — shared by parser and pipeline; intentionally cyclic (`models` ↔ `utils`) so `python -m app.pipeline tests/fixtures/mini_repo` reports one cycle.
+**Fixture:** `tests/fixtures/mini_repo/` — shared by parser and pipeline; intentionally cyclic (`models` ↔ `utils`) so `python -m app.pipeline tests/fixtures/mini_repo` reports one cycle and top critical files.
 
-**More detail:** [docs/learn.md — Cycle Detection](docs/learn.md#phase-1-week-2--cycle-detection) (how it works + full test table). [Testing overview](docs/learn.md#testing-overview) (all suites).
+**More detail:** [Cycle Detection](docs/learn.md#phase-1-week-2--cycle-detection) · [Criticality Scoring](docs/learn.md#phase-1-week-2--criticality-scoring) · [Testing overview](docs/learn.md#testing-overview)
 
 ---
 
@@ -331,8 +343,8 @@ npm run dev
 * [x] `CycleDetector` + tests (`tests/algorithms/test_cycles.py`, 8 cases)
 * [x] `GraphBuilder` + `GraphResult` — nodes and directed import edges
 * [x] Graph unit tests (`tests/test_graph.py`, 9 cases)
-* [x] `AnalysisPipeline` — parser → graph → cycles (`PipelineResult.cycles`)
+* [x] `AnalysisPipeline` — parser → graph → cycles → scores
 * [x] Pipeline tests (`tests/test_pipeline.py`, 9 cases)
-* [ ] PageRank, betweenness, and composite criticality scoring
+* [x] `AlgorithmEngine` — PageRank, betweenness, criticality (`test_scoring.py`, 12 cases)
 * [ ] `IngestionService` (zip upload, filters)
 * [ ] Pipeline stage metrics and benchmark CLI

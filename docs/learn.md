@@ -38,7 +38,7 @@
 | Deduplicate edges, deterministic sort | Yes |
 | Unit tests in `tests/test_graph.py` (9 cases) | Yes |
 | `CycleDetector` + `tests/algorithms/test_cycles.py` (8 cases) | Yes |
-| `AlgorithmEngine` (PageRank, betweenness, criticality) | No |
+| `AlgorithmEngine` (PageRank, betweenness, criticality) | Yes (12 tests) |
 
 ### Checklist (pipeline)
 
@@ -46,10 +46,11 @@
 |------|-------|
 | `AnalysisPipeline` in `backend/app/pipeline/pipeline.py` | Yes |
 | Wire `parse_repository` → `GraphBuilder` | Yes |
-| `PipelineResult` (`analyses` + `graph` + `cycles`) | Yes |
-| CLI: `python -m app.pipeline <repo-path>` | Yes |
+| `PipelineResult` (`analyses` + `graph` + `cycles` + `scores`) | Yes |
+| CLI: `python -m app.pipeline <repo-path>` | Yes (prints top critical files) |
 | Unit tests in `tests/test_pipeline.py` | Yes (9 cases) |
 | Wire `CycleDetector` into pipeline | Yes |
+| Wire `AlgorithmEngine` into pipeline | Yes |
 
 ---
 
@@ -73,16 +74,16 @@ GraphBuilder              ←  file-level import graph (V1)
 GraphResult               ←  nodes + edges today; scores later
         │
         ▼
-CycleDetector             ←  CircularDependencyResult (in PipelineResult.cycles)
+CycleDetector             ←  CircularDependencyResult (PipelineResult.cycles)
         │
         ▼
-AlgorithmEngine (planned) →  PageRank, betweenness, criticality
+AlgorithmEngine           ←  ScoringResult (PipelineResult.scores)
         │
         ▼
 PostgreSQL / JSON / API / React
 ```
 
-**Shipped today:** Parser layer, `GraphBuilder`, `CycleDetector`, `AnalysisPipeline` (parser → graph → cycles). Ingestion, scoring algorithms, and API are planned.
+**Shipped today:** Parser, `GraphBuilder`, `CycleDetector`, `AlgorithmEngine`, `AnalysisPipeline` (parse → graph → cycles → scores). Ingestion, metrics, and API are planned.
 
 `FileAnalysis` is intended to remain the **canonical source of parsed code information** for all current and future graph builders. Parse once; build many graph views from the same `dict[str, FileAnalysis]`.
 
@@ -91,8 +92,8 @@ PostgreSQL / JSON / API / React
 | Layer | Components | Responsibility |
 |-------|------------|----------------|
 | **Parser** | `ASTParser`, `FileAnalysis`, RepositoryParser (`parse_repository`) | Read source, walk AST, resolve imports, emit structured facts per file |
-| **Graph** | `GraphBuilder`, `GraphResult`, `CycleDetector`, `CircularDependencyResult` | Import graph + circular dependency detection |
-| **Pipeline** | `AnalysisPipeline`, `PipelineResult` | Orchestrate parse → graph → cycles without coupling layers |
+| **Graph** | `GraphBuilder`, `GraphResult`, `CycleDetector`, `AlgorithmEngine` | Import graph, cycles, criticality scores |
+| **Pipeline** | `AnalysisPipeline`, `PipelineResult` | Orchestrate parse → graph → cycles → scores |
 
 ---
 
@@ -140,7 +141,7 @@ parse_repository(repo)  →  dict[str, FileAnalysis]   # once
 
 \*Planned — not implemented.
 
-Each builder is a **pure function** over the same `FileAnalysis` dict. Repository walk and AST parsing happen once per analysis job; new views are additive. `AnalysisPipeline` returns `analyses`, `graph`, and `cycles` in `PipelineResult`.
+Each builder is a **pure function** over the same `FileAnalysis` dict. Repository walk and AST parsing happen once per analysis job; new views are additive. `AnalysisPipeline` returns `analyses`, `graph`, `cycles`, and `scores` in `PipelineResult`.
 
 ---
 
@@ -153,8 +154,8 @@ Each builder is a **pure function** over the same `FileAnalysis` dict. Repositor
 | Graph type | File-level dependency graph |
 | Nodes | Python file paths (`.py`) |
 | Edges | Import relationships from `resolved_deps` |
-| Components | `ASTParser`, RepositoryParser, `GraphBuilder`, `CycleDetector`, `AnalysisPipeline` |
-| Pipeline output | `PipelineResult(analyses, graph, cycles)` |
+| Components | `ASTParser`, RepositoryParser, `GraphBuilder`, `CycleDetector`, `AlgorithmEngine`, `AnalysisPipeline` |
+| Pipeline output | `PipelineResult(analyses, graph, cycles, scores)` |
 | Out of scope for V1 graph | External packages as nodes, class/function edges, scores |
 
 ### V2 — Richer structure graphs
@@ -168,9 +169,9 @@ Each builder is a **pure function** over the same `FileAnalysis` dict. Repositor
 | **Impact analysis** | File graph + traversal | "What breaks if I change file X?" |
 | **Enriched file nodes** | `line_count`, class/function counts | Size and complexity in the UI |
 | **Library analytics** | `external_deps` per file | Most-used libraries; files depending on `requests` or `numpy` |
-| **Graph algorithms** | `GraphResult` → NetworkX | PageRank, betweenness, criticality scores (`CycleDetector` already shipped) |
+| **Graph algorithms** | `GraphResult` → NetworkX | V1: cycles + criticality shipped; V2 may add more analytics |
 
-V2 adds **new builders** and **AlgorithmEngine** (scoring) — not a new parser. Cycle detection is V1-ready as a standalone unit.
+V2 adds **new builders** (class/function graphs) — not a new parser. Cycle detection and criticality scoring are V1-ready.
 
 ### V3 — AI-assisted insights
 
@@ -709,7 +710,7 @@ print(ast.dump(tree, indent=2))
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 37 tests
+PYTHONPATH=. pytest tests/ -v                    # all 49 tests
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser only (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder only (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline only (9)
@@ -761,7 +762,8 @@ backend/app/graph/
 └── algorithms/
     ├── base.py            # GraphAlgorithm protocol
     ├── digraph.py         # GraphResult → nx.DiGraph
-    └── cycles.py          # CycleDetector (shipped)
+    ├── cycles.py          # CycleDetector (shipped)
+    └── scoring.py         # AlgorithmEngine (shipped)
 ```
 
 ### 1. Output type (`GraphResult`)
@@ -773,7 +775,7 @@ class GraphResult:
     edges: list[tuple[str, str]]      # (importer, imported)
 ```
 
-This is the **structural** graph only — no scores yet. `CycleDetector` reads this structure to find circular dependencies. `AlgorithmEngine` will add PageRank, betweenness, and criticality later.
+This is the **structural** graph only. `CycleDetector` and `AlgorithmEngine` read it for cycles and criticality scores.
 
 ### 2. Input and API
 
@@ -1041,9 +1043,115 @@ print(CycleDetector().detect(graph))
 
 ---
 
+## Phase 1, Week 2 — Criticality Scoring
+
+**Goal:** Rank files by architectural importance using PageRank and betweenness centrality.
+
+**Files to read in order:**
+
+1. `backend/app/graph/models.py` — `NodeScore`, `ScoringResult`
+2. `backend/app/graph/algorithms/scoring.py` — `normalize_scores`, `AlgorithmEngine`
+3. `backend/tests/algorithms/test_scoring.py` — 12 unit tests
+
+**Status:** Implemented, unit-tested, and wired into `AnalysisPipeline` (`PipelineResult.scores`). CLI prints top 10 critical files.
+
+### 1. What each property means
+
+Edges are always **importer → imported** (e.g. `auth.py → models.py` means `auth` imports `models`). That direction matters for how scores flow.
+
+| Property | Plain English | High score means… | Low score means… |
+|----------|---------------|-------------------|------------------|
+| **`pagerank`** | How much *importance* lands on this file as a dependency | Many files (especially important ones) import it — shared core / utility | Few or no other files depend on it |
+| **`betweenness`** | How often this file is a *bridge* on paths between other files | Architectural bottleneck; unrelated modules connect through it | Peripheral; not on paths between others |
+| **`criticality`** | Ripple’s combined *change-risk* rank for this repo | Treat changes carefully; impact is likely wide | Safer to change in isolation (relatively) |
+| **`in_degree`** | How many project files **import this file** (direct dependents) | Many direct callers | Nothing in-repo imports it |
+| **`out_degree`** | How many project files **this file imports** (direct dependencies) | Depends on many other modules | Self-contained (few internal imports) |
+
+**PageRank (detail):** Imagine importance walking along import edges. Because edges point *toward* imported files, importance accumulates on modules that others depend on. A `models.py` imported by `auth`, `utils`, and `api` tends to outrank a leaf script that nothing imports. Raw PageRank values are non-negative and **sum to about 1.0** across the whole graph (they are a distribution, not percentages of “risk”).
+
+**Betweenness (detail):** For every pair of files A and B, find the shortest import-path(s) from A to B. Count how often those paths go through file X. High betweenness = X is a **bridge** or **bottleneck** (e.g. a shared adapter between two subsystems). You can change a leaf file with low betweenness without reshaping the whole graph; changing a high-betweenness file can ripple across distant parts of the codebase.
+
+**Criticality (detail):** PageRank and betweenness use different numeric scales, so Ripple **min-max normalizes** each metric to `[0, 1]` within the current repo, then blends:
+
+```
+criticality = 0.6 * normalize(pagerank) + 0.4 * normalize(betweenness)
+```
+
+Weights favor “widely depended on” (0.6) slightly over “bridge” (0.4). Criticality is **relative to this repository only** — a `0.8` in a tiny repo is not comparable to `0.8` in a monorepo. If every file has the same PageRank (or the same betweenness), that metric’s normalized values are all `0.0` (no relative ranking).
+
+**Degrees (detail):** Simple counts, not centrality algorithms. `in_degree=3` means three other project files list this file in their `resolved_deps`. `out_degree=2` means this file imports two other project files. External packages (`os`, `requests`) do **not** count — only in-repo edges.
+
+### 2. Output types
+
+```python
+@dataclass
+class NodeScore:
+    file_path: str
+    pagerank: float      # importance as a dependency (sums ~1.0 over graph)
+    betweenness: float   # bridge / bottleneck score
+    criticality: float   # 0.6 * norm(PR) + 0.4 * norm(BT), relative risk
+    in_degree: int       # # of project files that import this file
+    out_degree: int      # # of project files this file imports
+
+@dataclass
+class ScoringResult:
+    scores: list[NodeScore]   # sorted by criticality desc, then path
+
+    def top(self, n: int = 10) -> list[NodeScore]: ...
+```
+
+### 3. Formula (summary)
+
+```
+criticality = 0.6 * normalize(pagerank) + 0.4 * normalize(betweenness)
+```
+
+`normalize` is **min-max** to `[0, 1]`. If all values are equal, every node gets `0.0` for that metric’s contribution.
+
+### 4. Flow
+
+```
+GraphResult
+    │
+    ▼
+graph_result_to_digraph()
+    │
+    ├── nx.pagerank(alpha=0.85)
+    ├── nx.betweenness_centrality()
+    ├── in_degree / out_degree
+    │
+    ▼
+normalize each metric → weighted criticality → sort
+    │
+    ▼
+ScoringResult
+```
+
+### 5. Test cases (`test_scoring.py`)
+
+**12 unit tests** — synthetic graphs only.
+
+```bash
+PYTHONPATH=. pytest tests/algorithms/test_scoring.py -v
+```
+
+| Test | What it proves |
+|------|----------------|
+| `test_normalize_scores_*` | Min-max and equal-value edge cases |
+| `test_empty_graph_has_no_scores` | No nodes → empty `scores` |
+| `test_single_node_has_scores_and_zero_degrees` | Isolated file still scored |
+| `test_shared_dependency_ranks_higher_than_leaves` | Fan-in hub tops PageRank / criticality |
+| `test_bridge_node_has_high_betweenness` | Middle node on A→bridge→B path |
+| `test_criticality_uses_weighted_normalized_metrics` | Formula matches `0.6` / `0.4` weights |
+| `test_scores_sorted_by_criticality_then_path` | Stable ordering |
+| `test_top_returns_first_n` | `ScoringResult.top(n)` |
+| `test_run_matches_score` | `run` / `score` alias |
+
+---
+
 ## Phase 1 — Analysis Pipeline
 
-**Goal:** Connect parser, graph, and cycle detection in one call — parse once, build graph, detect cycles, return all three.
+**Goal:** Connect parser, graph, cycles, and scores in one call.
 
 ```python
 from app.pipeline import AnalysisPipeline
@@ -1052,6 +1160,8 @@ result = AnalysisPipeline().run("tests/fixtures/mini_repo")
 result.analyses   # dict[str, FileAnalysis]
 result.graph      # GraphResult
 result.cycles     # CircularDependencyResult
+result.scores     # ScoringResult
+result.scores.top(10)
 ```
 
 ```python
@@ -1060,6 +1170,7 @@ class PipelineResult:
     analyses: dict[str, FileAnalysis]
     graph: GraphResult
     cycles: CircularDependencyResult
+    scores: ScoringResult
 ```
 
 Flow:
@@ -1074,41 +1185,35 @@ GraphBuilder().build(analyses)
 CycleDetector().detect(graph)
         │
         ▼
-PipelineResult(analyses, graph, cycles)
+AlgorithmEngine().score(graph)
+        │
+        ▼
+PipelineResult(analyses, graph, cycles, scores)
 ```
 
-CLI: `python -m app.pipeline <repo-path>` (directory only today). Prints file/node/edge counts, edges, and any circular dependencies.
+CLI: `python -m app.pipeline <repo-path>` (directory only today). Prints file/node/edge/cycle counts, edges, circular dependencies, and **top critical files**.
 
 ```bash
 cd backend
 python -m app.pipeline tests/fixtures/mini_repo
-# files: 4
-# nodes: 4
-# edges: 4
-# cycles: 1
-# edges:
-#   myapp/auth.py -> myapp/models.py
-#   myapp/auth.py -> myapp/utils.py
-#   myapp/models.py -> myapp/utils.py
-#   myapp/utils.py -> myapp/models.py
-# circular_dependencies:
-#   myapp/models.py -> myapp/utils.py -> myapp/models.py
 ```
+
+Prints sections: **Summary**, **Dependency edges**, **Circular dependencies**, **Top critical files** (aligned table with `crit` / `pr` / `btw` / `in` / `out` and a short legend).
 
 ### Tests (`test_pipeline.py`)
 
-**9 tests** — mostly temp repos on disk (real parse → graph → cycles); one case uses pytest `monkeypatch` to stub `parse_repository`.
+**9 tests** — mostly temp repos on disk (real parse → graph → cycles → scores); one case uses pytest `monkeypatch` to stub `parse_repository`.
 
 | Test | Style | What it proves |
 |------|-------|----------------|
-| `test_empty_graph` | temp repo | Empty directory → empty graph, no cycles |
-| `test_single_node` | temp repo | One `.py` file → one node, zero edges, no cycles |
-| `test_simple_dependency_graph` | temp repo | Multi-file imports → correct edges; acyclic |
+| `test_empty_graph` | temp repo | Empty directory → empty graph, no cycles, no scores |
+| `test_single_node` | temp repo | One `.py` file → one node, one score |
+| `test_simple_dependency_graph` | temp repo | Edges correct; `app/models.py` tops criticality |
 | `test_dedup_edges` | temp repo | Duplicate imports of same module → one edge |
 | `test_ignore_missing_deps` | monkeypatch | `resolved_deps` pointing outside repo → no edges |
-| `test_deterministic_ordering` | temp repo | Two runs return identical nodes/edges/cycles |
-| `test_small_cycle` | temp repo | `a → b → c → a` in graph **and** `result.cycles` |
-| `test_run_parses_mini_repo_integration` | fixture | `mini_repo` cyclic (`models` ↔ `utils`); edges + `result.cycles` |
+| `test_deterministic_ordering` | temp repo | Two runs return identical nodes/edges/cycles/scores |
+| `test_small_cycle` | temp repo | Cycle in `result.cycles`; all nodes scored |
+| `test_run_parses_mini_repo_integration` | fixture | Cyclic fixture; scores present; shared modules rank high |
 | `test_run_raises_for_non_directory` | error path | File path (not dir) → `NotADirectoryError` |
 
 **Helpers:** `write_repo()` builds temp Python trees; `expected_edges()` derives edges from `analyses` for assertions.
@@ -1189,7 +1294,7 @@ No special test class or boilerplate — plain functions and `assert`.
 tests/test_parser.py::test_external_import_forms[absolute] PASSED
 tests/test_parser.py::test_external_import_forms[from_import] PASSED
 ...
-======================== 37 passed in 0.47s ========================
+======================== 49 passed in 0.90s ========================
 ```
 
 Parametrized tests (see below) show the case name in brackets, e.g. `[absolute]`, `[from_import]`.
@@ -1270,7 +1375,7 @@ That is why `pytest --collect-only` reports **11** tests in `test_parser.py` eve
 
 ## Testing overview
 
-**37 tests** across four suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+**49 tests** across five suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
 
 This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
 
@@ -1280,17 +1385,19 @@ This section is the **detailed test catalog** — what each file proves and how 
 |-------|------|-------|-------|------------------|
 | Parser | `test_parser.py` | 11 | Unit + integration | `ASTParser` import forms; `parse_repository` walk + resolution |
 | Graph | `test_graph.py` | 9 | Unit | `GraphBuilder` rules via synthetic `FileAnalysis` dicts |
-| Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline` wiring; parse → graph → cycles |
+| Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline`; parse → graph → cycles → scores |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `GraphResult` |
+| Scoring | `tests/algorithms/test_scoring.py` | 12 | Unit | `AlgorithmEngine` on synthetic `GraphResult` |
 
 ```
 test_parser.py     →  ASTParser / parse_repository  →  FileAnalysis
 test_graph.py      →  GraphBuilder                  →  GraphResult     (no parser)
-test_pipeline.py   →  AnalysisPipeline              →  PipelineResult  (parse + graph + cycles)
+test_pipeline.py   →  AnalysisPipeline              →  PipelineResult  (parse + graph + cycles + scores)
 test_cycles.py     →  CycleDetector                 →  CircularDependencyResult
+test_scoring.py    →  AlgorithmEngine               →  ScoringResult
 ```
 
-Parser tests do **not** call `GraphBuilder`. Graph tests do **not** call `parse_repository`. Pipeline tests exercise parse → graph → cycles except where monkeypatch injects controlled parse output. Cycle unit tests use `GraphResult` only (no pipeline).
+Parser tests do **not** call `GraphBuilder`. Graph tests do **not** call `parse_repository`. Pipeline tests exercise the full stack except where monkeypatch injects controlled parse output. Cycle and scoring unit tests use `GraphResult` only (no pipeline).
 
 ### Parser tests (`test_parser.py`) — full list
 
@@ -1339,14 +1446,34 @@ Uses `make_file()` helper for realistic `FileAnalysis` fixtures without touching
 | `test_detect_deduplicates_rotations` | Same cycle not reported twice |
 | `test_run_matches_detect` | `run()` alias equals `detect()` |
 
-Synthetic `GraphResult` only — no parser, no filesystem, no pipeline. Run only cycle tests: `PYTHONPATH=. pytest tests/algorithms/ -v`
+Synthetic `GraphResult` only — no parser, no filesystem, no pipeline.
+
+### Scoring tests (`test_scoring.py`) — full list
+
+**Study guide:** [Phase 1, Week 2 — Criticality Scoring](#phase-1-week-2--criticality-scoring).
+
+| Test | What it proves |
+|------|----------------|
+| `test_normalize_scores_empty` | `{}` → `{}` |
+| `test_normalize_scores_min_max` | Min-max to `[0, 1]` |
+| `test_normalize_scores_all_equal_are_zero` | Equal values → all `0.0` |
+| `test_empty_graph_has_no_scores` | No nodes → empty list |
+| `test_single_node_has_scores_and_zero_degrees` | Isolated file scored |
+| `test_shared_dependency_ranks_higher_than_leaves` | Fan-in hub tops ranking |
+| `test_bridge_node_has_high_betweenness` | Bridge on shortest path |
+| `test_criticality_uses_weighted_normalized_metrics` | `0.6` / `0.4` formula |
+| `test_scores_sorted_by_criticality_then_path` | Stable sort |
+| `test_top_returns_first_n` | `top(n)` slice |
+| `test_run_matches_score` | Alias equality |
+| `test_node_score_fields_present` | All `NodeScore` fields set |
+
+Run algorithm tests: `PYTHONPATH=. pytest tests/algorithms/ -v`
 
 ### Not covered yet
 
 | Area | Notes |
 |------|-------|
 | Single-file pipeline input | CLI accepts dirs only |
-| PageRank / betweenness / criticality | Planned `AlgorithmEngine` |
 | API / `test_api.py` | Stub only |
 | Syntax-error files through pipeline | Covered in graph unit tests only |
 | Five real open-source repos | Roadmap Week 1 milestone — manual / future |
@@ -1359,11 +1486,11 @@ Read [Roadmap.md](./Roadmap.md) for week-by-week tasks. Short preview:
 
 | Component | What it will do |
 |-----------|-----------------|
-| `AlgorithmEngine` | PageRank, betweenness, criticality score |
 | `IngestionService` | Unzip repo, walk tree, filter `venv/` / `__pycache__` |
+| Pipeline stage metrics + benchmark CLI | Per-stage timings |
 | REST API + Postgres | Persist results, async jobs, graph/impact endpoints |
 
-`AnalysisPipeline` (parser → graph → cycles) is **shipped**. See [Future Scope](#future-scope) for V2/V3 capabilities.
+`AnalysisPipeline` (parser → graph → cycles → scores) is **shipped**. See [Future Scope](#future-scope) for V2/V3 capabilities.
 
 ---
 
@@ -1373,7 +1500,7 @@ Read [Roadmap.md](./Roadmap.md) for week-by-week tasks. Short preview:
 |---------|----------|
 | `fastapi` + `uvicorn` | HTTP API |
 | `sqlalchemy` + `psycopg2` | Postgres ORM |
-| `networkx` | `CycleDetector` (`nx.simple_cycles`); PageRank/betweenness planned |
+| `networkx` + `numpy` + `scipy` | Cycles (`simple_cycles`); PageRank / betweenness |
 | `pytest` + `httpx` | Backend tests — see [Introduction to pytest](#introduction-to-pytest) |
 
 ---

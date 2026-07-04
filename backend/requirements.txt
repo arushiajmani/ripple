@@ -7,8 +7,10 @@ sqlalchemy>=2.0.0
 alembic>=1.13.0
 psycopg2-binary>=2.9.9
 
-# Graph analysis
+# Graph analysis (numpy/scipy required by NetworkX PageRank)
 networkx>=3.2
+numpy>=1.26
+scipy>=1.11
 
 # Config & file uploads
 python-dotenv>=1.0.0

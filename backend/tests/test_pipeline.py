@@ -1,6 +1,6 @@
 """AnalysisPipeline tests.
 
-Integration: real parse → graph → cycle detection on temp repos / mini_repo.
+Integration: real parse → graph → cycles → scores on temp repos / mini_repo.
 Unit-style: one monkeypatch case stubs parse_repository.
 
 Run from backend/:
@@ -58,6 +58,7 @@ def test_empty_graph(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
     assert result.graph.edges == []
     assert result.cycles.cycles == []
     assert not result.cycles.has_cycles
+    assert result.scores.scores == []
 
 
 def test_single_node(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
@@ -71,6 +72,8 @@ def test_single_node(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
     assert result.graph.nodes == ["solo/main.py"]
     assert result.graph.edges == []
     assert not result.cycles.has_cycles
+    assert len(result.scores.scores) == 1
+    assert result.scores.scores[0].file_path == "solo/main.py"
 
 
 def test_simple_dependency_graph(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
@@ -95,6 +98,9 @@ def test_simple_dependency_graph(pipeline: AnalysisPipeline, tmp_path: Path) -> 
     assert ("app/utils.py", "app/models.py") in result.graph.edges
     assert result.graph.edges == expected_edges(result.analyses)
     assert not result.cycles.has_cycles
+    assert len(result.scores.scores) == len(result.graph.nodes)
+    # models is imported by utils and auth → highest criticality among app/*.py
+    assert result.scores.scores[0].file_path == "app/models.py"
 
 
 def test_dedup_edges(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
@@ -166,6 +172,7 @@ def test_deterministic_ordering(pipeline: AnalysisPipeline, tmp_path: Path) -> N
     assert first.graph.nodes == second.graph.nodes
     assert first.graph.edges == second.graph.edges
     assert first.cycles.cycles == second.cycles.cycles
+    assert first.scores.scores == second.scores.scores
     assert first.graph.nodes == [
         "m_pkg/__init__.py",
         "m_pkg/m.py",
@@ -207,6 +214,8 @@ def test_small_cycle(pipeline: AnalysisPipeline, tmp_path: Path) -> None:
     assert result.cycles.cycles == [
         ["cycle/a.py", "cycle/b.py", "cycle/c.py"],
     ]
+    assert len(result.scores.scores) == 4
+    assert {s.file_path for s in result.scores.scores} == set(result.graph.nodes)
 
 
 def test_run_parses_mini_repo_integration(pipeline: AnalysisPipeline) -> None:
@@ -222,6 +231,11 @@ def test_run_parses_mini_repo_integration(pipeline: AnalysisPipeline) -> None:
     assert result.cycles.has_cycles
     assert result.cycles.cycle_count == 1
     assert result.cycles.cycles == [["myapp/models.py", "myapp/utils.py"]]
+    assert len(result.scores.scores) == len(result.graph.nodes)
+    # Shared modules (models/utils) outrank auth and __init__.
+    top_paths = [s.file_path for s in result.scores.top(2)]
+    assert "myapp/models.py" in top_paths or "myapp/utils.py" in top_paths
+    assert result.scores.top(1)[0].criticality >= result.scores.scores[-1].criticality
 
 
 def test_run_raises_for_non_directory(tmp_path: Path) -> None:

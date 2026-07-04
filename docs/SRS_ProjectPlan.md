@@ -654,16 +654,16 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 
 ### Verification (how to test requirements)
 
-Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**37 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests).
+Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**49 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests).
 
 
 | Requirement                            | Status          | Verified by                                                                     |
 | -------------------------------------- | --------------- | ------------------------------------------------------------------------------- |
 | FR-02 Index `.py` files                | Partial         | `test_collect_python_files_skips_cache_dirs`, `test_parse_repository_mini_repo` |
 | FR-03 Parse imports + dependency graph | Partial         | `test_parser.py` (11), `test_graph.py` (9), `test_pipeline.py` (9)              |
-| FR-04 PageRank                         | Not implemented | —                                                                               |
-| FR-05 Betweenness                      | Not implemented | —                                                                               |
-| FR-06 Circular dependencies            | Partial         | `test_cycles.py` (8) + `test_pipeline.py` (`test_small_cycle`); API/UI pending — [learn.md](./learn.md#phase-1-week-2--cycle-detection) |
+| FR-04 PageRank                         | Partial         | `test_scoring.py` (12) + pipeline; API/UI pending — [learn.md](./learn.md#phase-1-week-2--criticality-scoring) |
+| FR-05 Betweenness                      | Partial         | same as FR-04                                                                   |
+| FR-06 Circular dependencies            | Partial         | `test_cycles.py` (8) + `test_pipeline.py`; API/UI pending — [learn.md](./learn.md#phase-1-week-2--cycle-detection) |
 | FR-07 REST API                         | Not implemented | `test_api.py` stub                                                              |
 | FR-13 Pipeline metrics                 | Not implemented | —                                                                               |
 | FR-14 Benchmark CLI                    | Not implemented | —                                                                               |
@@ -693,18 +693,18 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**37 tes
 **Week 2: Graph Builder + Algorithms**
 
 - [x] Implement `GraphBuilder` — assemble parsed files into a dependency graph (`GraphResult`)
-- [ ] Implement PageRank computation
-- [ ] Implement Betweenness Centrality computation
+- [x] Implement PageRank computation — `AlgorithmEngine` (`graph/algorithms/scoring.py`)
+- [x] Implement Betweenness Centrality computation — same
 - [x] Implement cycle detection — `CycleDetector` (`graph/algorithms/cycles.py`)
-- [x] Write unit tests for graph algorithms using small synthetic graphs — structure + cycles (`test_graph.py`, `test_cycles.py`)
-- [x] Pipeline reports cycles — `PipelineResult.cycles`; CLI: `python -m app.pipeline <repo-path>`
-- [ ] Milestone: `python analyze.py path/to/repo/` prints top 10 critical files and any cycles (scores still pending)
+- [x] Write unit tests for graph algorithms — `test_graph.py`, `test_cycles.py`, `test_scoring.py`
+- [x] Pipeline reports cycles + scores — `PipelineResult.cycles` / `.scores`; CLI prints top critical files
+- [x] Milestone: `python -m app.pipeline <repo-path>` prints top critical files and any cycles
 
 **Week 3: Ingestion + Integration**
 
 - [ ] Implement `IngestionService` — clone a GitHub repo to temp directory
 - [x] Walk repo and parse all `.py` files — `parse_repository()` (directory path, not zip)
-- [x] Wire parse → graph → cycles in `AnalysisPipeline` (`PipelineResult.cycles`)
+- [x] Wire parse → graph → cycles → scores in `AnalysisPipeline`
 - [ ] Wire full pipeline with pipeline stage instrumentation
 - [ ] Add benchmark CLI: `python -m app.benchmark --repo path/to/project`
 - [ ] Output results as JSON file
