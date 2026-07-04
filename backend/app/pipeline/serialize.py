@@ -7,7 +7,7 @@ Schema (v1) — hierarchical so future analyses extend ``analysis`` without
 new top-level keys:
 
     {
-      "metadata": { "created_at" },
+      "metadata": { "generated_at" },
       "summary":  { counts / cheap repo stats },
       "graph":    { "nodes", "edges" },
       "analysis": { "cycles", "scores", "top_critical", ...future... },
@@ -20,7 +20,9 @@ Design notes:
   ``{"id", "type": "file"}`` can wait until multi-graph types share one payload.
 * **Scores stay an ordered list** — ranking is part of the contract; clients
   iterate top-to-bottom without re-sorting.
-* **Edges are [importer, imported] lists** — JSON has no tuples.
+* **Edges are objects** ``{source, target, type}`` — self-describing; ``type``
+  is ``"imports"`` today. ``inherits`` / ``calls`` wait on class/call resolution
+  (see docs/learn.md — Why not type inherits yet).
 * **Deterministic ordering** — sorted file keys; scores already criticality-desc.
 
 Usage:
@@ -51,6 +53,9 @@ from app.pipeline.pipeline import PipelineResult
 
 # Default number of files in analysis.top_critical.
 DEFAULT_TOP_N = 10
+
+# Edge kind for the file import graph (extensible later: calls, inherits, …).
+EDGE_TYPE_IMPORTS = "imports"
 
 
 # --- Small field serializers (parser / graph models → plain dicts) ---
@@ -111,12 +116,12 @@ def node_score_to_dict(score: NodeScore) -> dict[str, Any]:
 # --- Section builders ---
 
 
-def build_metadata(*, created_at: datetime | None = None) -> dict[str, Any]:
+def build_metadata(*, generated_at: datetime | None = None) -> dict[str, Any]:
     """When this document was produced (UTC ISO-8601)."""
-    when = created_at or datetime.now(timezone.utc)
+    when = generated_at or datetime.now(timezone.utc)
     # Stable Z suffix for UTC (easier for clients than +00:00).
     timestamp = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return {"created_at": timestamp}
+    return {"generated_at": timestamp}
 
 
 def build_summary(result: PipelineResult) -> dict[str, Any]:
@@ -136,15 +141,52 @@ def build_summary(result: PipelineResult) -> dict[str, Any]:
     }
 
 
+def edge_to_dict(source: str, target: str, *, edge_type: str = EDGE_TYPE_IMPORTS) -> dict[str, str]:
+    """Self-describing edge: source imports target (for the file graph)."""
+    return {
+        "source": source,
+        "target": target,
+        "type": edge_type,
+    }
+
+
 def build_graph(graph: GraphResult) -> dict[str, Any]:
     """Structural file import graph.
 
-    Nodes are path strings in V1 (identity = path). Edges are
-    [importer, imported] lists for JSON compatibility.
+    Nodes are path strings in V1 (identity = path). Edges are objects
+    ``{source, target, type: "imports"}`` so clients need not remember order,
+    and future edge kinds (calls, inherits, …) share the same shape.
     """
     return {
         "nodes": list(graph.nodes),
-        "edges": [[source, target] for source, target in graph.edges],
+        "edges": [
+            edge_to_dict(source, target)
+            for source, target in graph.edges
+        ],
+    }
+
+
+def cycle_to_dict(cycle: list[str]) -> dict[str, Any]:
+    """One circular dependency as a self-describing object.
+
+    ``nodes`` is an open path (first does not repeat at the end); the cycle
+    closes from the last node back to the first. ``edges`` lists each step
+    with the same shape as ``graph.edges`` (type ``imports`` for the file graph).
+    """
+    nodes = list(cycle)
+    n = len(nodes)
+    edges: list[dict[str, str]] = []
+    if n == 1:
+        # Self-loop: file imports itself.
+        edges.append(edge_to_dict(nodes[0], nodes[0]))
+    elif n > 1:
+        for i in range(n - 1):
+            edges.append(edge_to_dict(nodes[i], nodes[i + 1]))
+        edges.append(edge_to_dict(nodes[-1], nodes[0]))
+    return {
+        "nodes": nodes,
+        "length": n,
+        "edges": edges,
     }
 
 
@@ -152,7 +194,7 @@ def build_cycles(cycles: CircularDependencyResult) -> dict[str, Any]:
     return {
         "has_cycles": cycles.has_cycles,
         "cycle_count": cycles.cycle_count,
-        "cycles": [list(cycle) for cycle in cycles.cycles],
+        "cycles": [cycle_to_dict(cycle) for cycle in cycles.cycles],
     }
 
 
@@ -187,19 +229,19 @@ def pipeline_result_to_dict(
     *,
     top_n: int = DEFAULT_TOP_N,
     include_files: bool = True,
-    created_at: datetime | None = None,
+    generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Full analysis payload for JSON export or future API responses.
 
     Top-level keys (stable order for readability):
-        metadata — created_at
+        metadata — generated_at
         summary  — cheap counts
         graph    — nodes + edges (structure only)
         analysis — cycles, scores, top_critical (+ future algorithms)
         files    — optional path → FileAnalysis (omit for a smaller file)
     """
     payload: dict[str, Any] = {
-        "metadata": build_metadata(created_at=created_at),
+        "metadata": build_metadata(generated_at=generated_at),
         "summary": build_summary(result),
         "graph": build_graph(result.graph),
         "analysis": build_analysis(result, top_n=top_n),
@@ -215,14 +257,14 @@ def pipeline_result_to_json(
     indent: int | None = 2,
     top_n: int = DEFAULT_TOP_N,
     include_files: bool = True,
-    created_at: datetime | None = None,
+    generated_at: datetime | None = None,
 ) -> str:
     """Serialize PipelineResult to a JSON string."""
     data = pipeline_result_to_dict(
         result,
         top_n=top_n,
         include_files=include_files,
-        created_at=created_at,
+        generated_at=generated_at,
     )
     return json.dumps(data, indent=indent, ensure_ascii=False) + "\n"
 
@@ -234,7 +276,7 @@ def write_pipeline_json(
     indent: int | None = 2,
     top_n: int = DEFAULT_TOP_N,
     include_files: bool = True,
-    created_at: datetime | None = None,
+    generated_at: datetime | None = None,
 ) -> Path:
     """Write analysis JSON to disk; returns the resolved path."""
     out = Path(path)
@@ -244,7 +286,7 @@ def write_pipeline_json(
         indent=indent,
         top_n=top_n,
         include_files=include_files,
-        created_at=created_at,
+        generated_at=generated_at,
     )
     out.write_text(text, encoding="utf-8")
     return out.resolve()

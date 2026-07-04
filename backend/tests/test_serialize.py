@@ -20,7 +20,7 @@ FIXED_AT = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
 
 def _dict(result=None, **kwargs):
     result = result or AnalysisPipeline().run(FIXTURE_ROOT)
-    kwargs.setdefault("created_at", FIXED_AT)
+    kwargs.setdefault("generated_at", FIXED_AT)
     return result.to_dict(**kwargs)
 
 
@@ -39,7 +39,7 @@ def test_top_level_keys_and_order() -> None:
 def test_metadata() -> None:
     data = _dict()
 
-    assert data["metadata"] == {"created_at": "2026-07-04T12:00:00Z"}
+    assert data["metadata"] == {"generated_at": "2026-07-04T12:00:00Z"}
 
 
 def test_summary_stats() -> None:
@@ -66,13 +66,22 @@ def test_graph_nodes_are_path_strings() -> None:
     assert "myapp/models.py" in graph["nodes"]
 
 
-def test_graph_edges_are_lists_not_tuples() -> None:
+def test_graph_edges_are_self_describing() -> None:
+    """Edges use named fields so clients need not remember [importer, imported]."""
     data = _dict()
 
     assert data["graph"]["edges"]
     for edge in data["graph"]["edges"]:
-        assert isinstance(edge, list)
-        assert len(edge) == 2
+        assert set(edge.keys()) == {"source", "target", "type"}
+        assert edge["type"] == "imports"
+        assert isinstance(edge["source"], str)
+        assert isinstance(edge["target"], str)
+
+    assert {
+        "source": "myapp/auth.py",
+        "target": "myapp/models.py",
+        "type": "imports",
+    } in data["graph"]["edges"]
 
 
 def test_analysis_groups_cycles_and_scores() -> None:
@@ -82,7 +91,21 @@ def test_analysis_groups_cycles_and_scores() -> None:
     assert set(analysis.keys()) == {"cycles", "scores", "top_critical"}
     assert analysis["cycles"]["has_cycles"] is True
     assert analysis["cycles"]["cycle_count"] == 1
-    assert ["myapp/models.py", "myapp/utils.py"] in analysis["cycles"]["cycles"]
+    cycle = analysis["cycles"]["cycles"][0]
+    assert cycle["nodes"] == ["myapp/models.py", "myapp/utils.py"]
+    assert cycle["length"] == 2
+    assert cycle["edges"] == [
+        {
+            "source": "myapp/models.py",
+            "target": "myapp/utils.py",
+            "type": "imports",
+        },
+        {
+            "source": "myapp/utils.py",
+            "target": "myapp/models.py",
+            "type": "imports",
+        },
+    ]
 
     assert len(analysis["scores"]) == 4
     assert len(analysis["top_critical"]) == 2
@@ -133,10 +156,10 @@ def test_files_keys_are_sorted() -> None:
 
 def test_to_json_round_trip() -> None:
     result = AnalysisPipeline().run(FIXTURE_ROOT)
-    text = result.to_json(created_at=FIXED_AT)
+    text = result.to_json(generated_at=FIXED_AT)
     data = json.loads(text)
 
-    assert data["metadata"]["created_at"] == "2026-07-04T12:00:00Z"
+    assert data["metadata"]["generated_at"] == "2026-07-04T12:00:00Z"
     assert data["analysis"]["cycles"]["cycle_count"] == 1
 
 
@@ -144,7 +167,7 @@ def test_write_json_creates_file(tmp_path: Path) -> None:
     result = AnalysisPipeline().run(FIXTURE_ROOT)
     out = tmp_path / "out" / "result.json"
 
-    written = result.write_json(out, created_at=FIXED_AT)
+    written = result.write_json(out, generated_at=FIXED_AT)
 
     assert written == out.resolve()
     assert out.is_file()
@@ -156,5 +179,5 @@ def test_write_json_creates_file(tmp_path: Path) -> None:
 def test_pipeline_result_to_dict_matches_method() -> None:
     result = AnalysisPipeline().run(FIXTURE_ROOT)
     assert pipeline_result_to_dict(
-        result, created_at=FIXED_AT
-    ) == result.to_dict(created_at=FIXED_AT)
+        result, generated_at=FIXED_AT
+    ) == result.to_dict(generated_at=FIXED_AT)
