@@ -132,11 +132,11 @@ Full property glossary: [learn.md — What each property means](./learn.md#1-wha
 
 #### Tasks
 
-- [ ] Implement `IngestionService` in `backend/app/ingestion/service.py`
-- [ ] Accept zip file, extract to temp directory (`/tmp/ripple/{job_id}/`)
+- [x] Implement `IngestionService` in `backend/app/ingestion/service.py`
+- [x] Accept zip file, extract to temp directory (`/tmp/ripple/{job_id}/`)
 - [x] Walk directory tree, collect all `.py` files — via `parse_repository()` / `collect_python_files()`
 - [x] Filter out virtual environments (`venv/`, `.venv/`, `env/`), build artifacts (`__pycache__/`, `*.pyc`), test files (optional — include for now, filter later) — via `SKIP_DIRS` in `parser/models.py`
-- [ ] Wire `IngestionService` → `ASTParser` → `GraphBuilder` → `AlgorithmEngine` into a single `AnalysisPipeline` class — partial: `AnalysisPipeline` wires parse → graph → cycles → scores (ingestion pending)
+- [ ] Wire `IngestionService` → `AnalysisPipeline` in API layer — partial: call `ingest_zip` then `AnalysisPipeline.run(ingestion.local_path)` then `cleanup` (see learn.md)
 - [ ] Instrument every pipeline stage with timing: `file_discovery`, `ast_parsing` (total + per-file average), `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization` — timings held on `PipelineResult`
 - [ ] Add benchmark CLI: `python -m app.benchmark --repo path/to/project` — runs the pipeline and prints a formatted timing breakdown to stdout (for performance testing on large repos)
 - [x] Output complete result as a JSON file — `python -m app.pipeline <repo> --json result.json`
@@ -146,11 +146,14 @@ Full property glossary: [learn.md — What each property means](./learn.md#1-wha
 #### Milestone Check
 
 ```bash
-python -m backend.app.pipeline path/to/project.zip
-# Produces: result.json with nodes, edges, scores, cycles
+# Automated ingestion tests
+cd backend && PYTHONPATH=. pytest tests/test_ingestion.py -v
 
-python -m app.benchmark --repo path/to/project
-# Prints per-stage timing breakdown to stdout
+# Manual: zip fixture → ingest → pipeline → JSON
+python -m app.pipeline tests/fixtures/mini_repo --json result.json
+
+# Future: zip path via CLI / API
+# python -m app.benchmark --repo path/to/project
 ```
 
 The JSON output is correct, complete, and makes intuitive sense for a project you understand.

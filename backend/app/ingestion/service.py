@@ -115,4 +115,3 @@ def _is_within_directory(root: Path, target: Path) -> bool:
         return True
     except ValueError:
         return False
-

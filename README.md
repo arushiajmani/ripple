@@ -18,7 +18,7 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 
 ### Planned (near term)
 
-* Zip upload ingestion (`IngestionService`)
+* **Zip ingestion** — `IngestionService`: extract upload to `/tmp/ripple/{job_id}/`, then run pipeline; `cleanup()` when done
 * Pipeline stage metrics and benchmark CLI (`python -m app.benchmark --repo path/to/project`)
 * Impact analysis for proposed changes
 * Interactive graph visualization
@@ -101,6 +101,8 @@ ripple/
 │   │   ├── graph/
 │   │   │   ├── models.py        # GraphResult
 │   │   │   └── builder.py       # GraphBuilder
+│   │   ├── ingestion/
+│   │   │   └── service.py       # IngestionService (zip → /tmp/ripple/{job_id}/)
 │   │   └── pipeline/
 │   │       ├── pipeline.py      # AnalysisPipeline (parse → graph → cycles → scores)
 │   │       ├── serialize.py     # PipelineResult → JSON
@@ -273,9 +275,36 @@ result.write_json("result.json")
 #   criticality  — 0.6 * norm(PR) + 0.4 * norm(BT); relative change-risk
 #   in_degree    — # of project files that import this file
 #   out_degree   — # of project files this file imports
+
+### Zip ingestion
+
+Extract an uploaded archive, analyze, then clean up:
+
+```python
+from app.ingestion import IngestionService
+from app.pipeline import AnalysisPipeline
+
+service = IngestionService()
+ingestion = service.ingest_zip("project.zip")
+
+try:
+    result = AnalysisPipeline().run(ingestion.local_path)
+    result.write_json("result.json")
+finally:
+    service.cleanup(ingestion)
 ```
 
-Study guide: [What each property means](docs/learn.md#1-what-each-property-means) · [Criticality Scoring](docs/learn.md#phase-1-week-2--criticality-scoring) · [Pipeline](docs/learn.md#phase-1--analysis-pipeline)
+Extract path: `/tmp/ripple/{job_id}/` (override with `IngestionService(base_dir=...)`).
+
+**Test it:**
+
+```bash
+cd backend
+source .venv/bin/activate
+PYTHONPATH=. pytest tests/test_ingestion.py -v   # all 8 ingestion tests
+```
+
+Study guide: [What each property means](docs/learn.md#1-what-each-property-means) · [Criticality Scoring](docs/learn.md#phase-1-week-2--criticality-scoring) · [Pipeline](docs/learn.md#phase-1--analysis-pipeline) · [Ingestion](docs/learn.md#phase-1--zip-ingestion)
 
 ---
 
@@ -296,10 +325,11 @@ From `backend/` (requires `PYTHONPATH=.` so Python finds the `app` package):
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 63 tests (-v = verbose, one line per test)
+PYTHONPATH=. pytest tests/ -v                    # all 71 tests (-v = verbose, one line per test)
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
+PYTHONPATH=. pytest tests/test_ingestion.py -v   # ingestion (8)
 PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (14)
 PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (12)
 ```
@@ -309,6 +339,7 @@ PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (12)
 | **`test_parser.py`** | 11 | Import forms (parametrized), `__future__` / syntax edge cases, `mini_repo` integration |
 | **`test_graph.py`** | 9 | Empty/single-node graphs; dependency edges; dedup; missing deps; cycles; self-loops; dict-key semantics; syntax-error files |
 | **`test_pipeline.py`** | 9 | End-to-end parse → graph → cycles → scores; `test_small_cycle`; `mini_repo` integration |
+| **`test_ingestion.py`** | 8 | Zip extract, zip-slip rejection, cleanup, pipeline integration |
 | **`test_serialize.py`** | 14 | metadata, summary, statistics, graph, analysis, files |
 | **`test_cycles.py`** | 8 | `CycleDetector`: empty/acyclic graphs, simple cycles, self-loops, disjoint cycles, normalization |
 | **`test_scoring.py`** | 12 | `AlgorithmEngine`: normalize, PageRank fan-in, betweenness bridge, criticality weights, `top()` |
@@ -356,5 +387,5 @@ npm run dev
 * [x] Pipeline tests (`tests/test_pipeline.py`, 9 cases)
 * [x] `AlgorithmEngine` — PageRank, betweenness, criticality (`test_scoring.py`, 12 cases)
 * [x] JSON export — `serialize.py`, `--json PATH` (`test_serialize.py`)
-* [ ] `IngestionService` (zip upload, filters)
+* [x] `IngestionService` (zip upload, temp extract, cleanup)
 * [ ] Pipeline stage metrics and benchmark CLI

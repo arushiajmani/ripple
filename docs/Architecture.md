@@ -155,11 +155,12 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 | Parser | `tests/test_parser.py` | 11 | `ASTParser`, `parse_repository` — no graph |
 | Graph | `tests/test_graph.py` | 9 | `GraphBuilder` — synthetic `FileAnalysis`, no parser |
 | Pipeline | `tests/test_pipeline.py` | 9 | `AnalysisPipeline` — parse → graph → cycles → scores |
+| Ingestion | `tests/test_ingestion.py` | 8 | Zip extract, zip-slip, cleanup, pipeline |
 | Serialize | `tests/test_serialize.py` | 14 | JSON (`metadata` / `summary` / `statistics` / `graph` / …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `GraphResult` only |
 | Scoring | `tests/algorithms/test_scoring.py` | 12 | `AlgorithmEngine` — PageRank, betweenness, criticality |
 
-**63 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
+**71 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
 
 - **Quick commands:** [README — Tests](../README.md#tests)
 - **Full catalog (every test name):** [learn.md — Testing overview](./learn.md#testing-overview)

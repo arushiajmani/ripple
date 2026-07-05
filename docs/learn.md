@@ -24,7 +24,7 @@
 | `FileAnalysis` dataclass | Yes |
 | CLI: `python -m app.parser.cli <file-or-repo>` | Yes |
 | Unit tests in `tests/test_parser.py` | Yes (11 cases) |
-| `IngestionService` (zip upload, filters) | No |
+| `IngestionService` (zip upload, temp extract, cleanup) | Yes |
 | Test against 5 real open-source files | No |
 
 ### Checklist (graph builder)
@@ -222,7 +222,7 @@ ImportInfo(module="pathlib", name="Path", type="from_import")
 | Single file (no `project_files`) | `[]` | top-level packages from imports (`os`, `numpy`, …) |
 | Repo (`project_files` set) | paths that exist in the project (`myapp/utils.py`) | everything else (`os`, `requests`, …) |
 
-True file-to-file resolution only happens when you pass the full set of project `.py` paths — `parse_repository()` does this automatically. A future `IngestionService` will add zip upload and smarter filtering.
+True file-to-file resolution only happens when you pass the full set of project `.py` paths — `parse_repository()` does this automatically. `IngestionService` extracts uploaded zips to a temp job dir before the same walk runs.
 
 We also removed a short-lived `modules` field — `imports` + `resolved_deps` + `external_deps` cover the use cases without a third redundant list.
 
@@ -270,7 +270,7 @@ We also removed a short-lived `modules` field — `imports` + `resolved_deps` + 
 | `repository.py` | `collect_python_files`, `parse_repository` |
 | `cli.py` | `print_analysis`, `main` — `python -m app.parser.cli` |
 
-`GraphBuilder` consumes `resolved_deps` from the parser — it does not re-run import resolution. `IngestionService` will eventually own file discovery; `repository.py` is the interim orchestrator.
+`GraphBuilder` consumes `resolved_deps` from the parser — it does not re-run import resolution. `IngestionService` delivers extracted files on disk; `repository.py` still owns the parse walk.
 
 ### 7. Suffix matching for internal imports
 
@@ -713,7 +713,7 @@ print(ast.dump(tree, indent=2))
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 63 tests
+PYTHONPATH=. pytest tests/ -v                    # all 71 tests
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser only (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder only (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline only (9)
@@ -1152,6 +1152,118 @@ PYTHONPATH=. pytest tests/algorithms/test_scoring.py -v
 
 ---
 
+## Phase 1 — Zip ingestion
+
+**Goal:** Accept a zip archive, extract to `/tmp/ripple/{job_id}/`, run analysis, clean up.
+
+```python
+from app.ingestion import IngestionService
+from app.pipeline import AnalysisPipeline
+
+service = IngestionService()  # default base_dir=/tmp/ripple
+ingestion = service.ingest_zip("upload.zip")  # or ingest_zip_bytes(data)
+
+try:
+    result = AnalysisPipeline().run(ingestion.local_path)
+    result.write_json("result.json")
+finally:
+    service.cleanup(ingestion)
+```
+
+| API | Purpose |
+|-----|---------|
+| `ingest_zip(path, job_id=...)` | Extract a zip file on disk |
+| `ingest_zip_bytes(data, job_id=...)` | Extract from HTTP upload bytes |
+| `IngestionResult.local_path` | Pass to `AnalysisPipeline.run` / `parse_repository` |
+| `IngestionResult.python_files` | Relative `.py` paths (skips `venv/`, `__pycache__/`, …) |
+| `cleanup(result)` | Remove `{base_dir}/{job_id}/` after analysis |
+
+Zip-slip paths (`../outside.py`) are rejected. Failed extracts remove the partial job directory.
+
+### Test cases (`test_ingestion.py`)
+
+**8 unit/integration tests** — temp zips on disk (pytest `tmp_path`); no real `/tmp/ripple` pollution because tests use `IngestionService(base_dir=tmp_path / "ripple")`.
+
+Run from `backend/` (activate venv first if you use one):
+
+```bash
+cd backend
+source .venv/bin/activate
+PYTHONPATH=. pytest tests/test_ingestion.py -v
+```
+
+| Test | What it proves |
+|------|----------------|
+| `test_ingest_zip_extracts_to_job_directory` | Zip of `mini_repo` lands under `{base_dir}/{job_id}/`; `python_files` lists relative paths |
+| `test_ingest_zip_bytes` | In-memory zip bytes extract the same way as a file path |
+| `test_ingest_zip_generates_job_id_when_omitted` | UUID job id when `job_id` not passed; single `main.py` discovered |
+| `test_ingest_zip_missing_file_raises` | `FileNotFoundError` for a missing zip path |
+| `test_ingest_zip_rejects_zip_slip` | `../escape.py` rejected; partial job dir removed |
+| `test_failed_extract_removes_partial_directory` | Corrupt zip → `BadZipFile`; no leftover job directory |
+| `test_cleanup_removes_job_directory` | `cleanup()` deletes extract dir; second call is safe |
+| `test_ingested_repo_runs_through_pipeline` | Extract → `AnalysisPipeline.run(local_path)` → 4 files, 1 cycle, 4 scores |
+
+**What these tests deliberately skip:** HTTP upload (`POST /api/analyze`), PostgreSQL persistence, default `/tmp/ripple` path (overridden in tests).
+
+Also listed under [Testing overview — Ingestion tests](#ingestion-tests-test_ingestionpy).
+
+### Try it yourself (manual)
+
+**1. Automated tests (fastest check)**
+
+```bash
+cd backend
+source .venv/bin/activate
+PYTHONPATH=. pytest tests/test_ingestion.py -v
+```
+
+**2. Zip the fixture and ingest in Python**
+
+```bash
+cd backend
+source .venv/bin/activate
+python3 <<'EOF'
+import zipfile
+from pathlib import Path
+from app.ingestion import IngestionService
+from app.pipeline import AnalysisPipeline
+
+fixture = Path("tests/fixtures/mini_repo")
+zip_path = Path("/tmp/mini_repo.zip")
+with zipfile.ZipFile(zip_path, "w") as z:
+    for py in fixture.rglob("*.py"):
+        z.write(py, py.relative_to(fixture.parent).as_posix())
+
+service = IngestionService(base_dir="/tmp/ripple-manual-test")
+ingestion = service.ingest_zip(zip_path, job_id="demo")
+print("job_id:", ingestion.job_id)
+print("local_path:", ingestion.local_path)
+print("python_files:", sorted(ingestion.python_files))
+
+result = AnalysisPipeline().run(ingestion.local_path)
+print("cycles:", result.cycles.cycle_count)
+print("top file:", result.scores.scores[0].file_path)
+
+service.cleanup(ingestion)
+print("cleaned up")
+EOF
+```
+
+**3. Inspect the extract directory before cleanup**
+
+```python
+from app.ingestion import IngestionService
+
+service = IngestionService()  # extracts to /tmp/ripple/{job_id}/
+ingestion = service.ingest_zip("/tmp/mini_repo.zip")
+print(ingestion.local_path)  # ls this path to see extracted files
+# service.cleanup(ingestion)  # call when done
+```
+
+Pass `ingestion.local_path` to `AnalysisPipeline().run()` — same as pointing the pipeline at an unpacked directory. The analysis root is the **extract root**; if the zip contains a top-level folder (e.g. `myproject/...`), paths in the graph will include that prefix.
+
+---
+
 ## Phase 1 — Analysis Pipeline
 
 **Goal:** Connect parser, graph, cycles, and scores in one call.
@@ -1537,7 +1649,7 @@ That is why `pytest --collect-only` reports **11** tests in `test_parser.py` eve
 
 ## Testing overview
 
-**63 tests** across six suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+**71 tests** across seven suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
 
 This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
 
@@ -1548,6 +1660,7 @@ This section is the **detailed test catalog** — what each file proves and how 
 | Parser | `test_parser.py` | 11 | Unit + integration | `ASTParser` import forms; `parse_repository` walk + resolution |
 | Graph | `test_graph.py` | 9 | Unit | `GraphBuilder` rules via synthetic `FileAnalysis` dicts |
 | Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline`; parse → graph → cycles → scores |
+| Ingestion | `test_ingestion.py` | 8 | Unit | `IngestionService`: zip path/bytes, zip-slip, cleanup |
 | Serialize | `test_serialize.py` | 14 | Unit | JSON (`metadata` / `summary` / `statistics` / `graph` / …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `GraphResult` |
 | Scoring | `tests/algorithms/test_scoring.py` | 12 | Unit | `AlgorithmEngine` on synthetic `GraphResult` |
@@ -1633,6 +1746,23 @@ Synthetic `GraphResult` only — no parser, no filesystem, no pipeline.
 
 Run algorithm tests: `PYTHONPATH=. pytest tests/algorithms/ -v`
 
+### Ingestion tests (`test_ingestion.py`) — full list
+
+**Study guide:** [Phase 1 — Zip ingestion](#phase-1--zip-ingestion).
+
+| Test | What it proves |
+|------|----------------|
+| `test_ingest_zip_extracts_to_job_directory` | File zip → job dir; `mini_repo` layout preserved |
+| `test_ingest_zip_bytes` | Bytes upload path works |
+| `test_ingest_zip_generates_job_id_when_omitted` | Auto UUID `job_id` |
+| `test_ingest_zip_missing_file_raises` | Missing zip → `FileNotFoundError` |
+| `test_ingest_zip_rejects_zip_slip` | Path traversal blocked |
+| `test_failed_extract_removes_partial_directory` | Bad zip → no orphan dir |
+| `test_cleanup_removes_job_directory` | `cleanup()` removes extract |
+| `test_ingested_repo_runs_through_pipeline` | Full extract → pipeline → cycles + scores |
+
+Run: `PYTHONPATH=. pytest tests/test_ingestion.py -v`
+
 ### Not covered yet
 
 | Area | Notes |
@@ -1650,9 +1780,9 @@ Read [Roadmap.md](./Roadmap.md) for week-by-week tasks. Short preview:
 
 | Component | What it will do |
 |-----------|-----------------|
-| `IngestionService` | Unzip repo, walk tree, filter `venv/` / `__pycache__` |
-| Pipeline stage metrics + benchmark CLI | Per-stage timings |
+| Pipeline stage metrics + benchmark CLI | Per-stage timings (`python -m app.benchmark`) |
 | REST API + Postgres | Persist results, async jobs, graph/impact endpoints |
+| End-to-end on 3 real repos | Manual validation milestone |
 
 `AnalysisPipeline` (parser → graph → cycles → scores) is **shipped**. See [Future Scope](#future-scope) for V2/V3 capabilities.
 

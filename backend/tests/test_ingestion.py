@@ -1,4 +1,4 @@
-"""IngestionService tests.
+"""IngestionService tests — zip extract to temp job dirs.
 
 Run from backend/:
     PYTHONPATH=. pytest tests/test_ingestion.py -v
@@ -6,7 +6,6 @@ Run from backend/:
 
 from __future__ import annotations
 
-import io
 import zipfile
 from pathlib import Path
 
@@ -18,97 +17,120 @@ from app.pipeline import AnalysisPipeline
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_repo"
 
 
-def _make_zip(root: Path, files: dict[str, str]) -> Path:
-    """Write ``files`` (archive path → content) into a zip under ``root``."""
-    zip_path = root / "repo.zip"
-    with zipfile.ZipFile(zip_path, "w") as archive:
-        for name, content in files.items():
-            archive.writestr(name, content)
-    return zip_path
+def _make_zip(path: Path, members: dict[str, bytes]) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
 
 
-def test_ingest_zip_extracts_to_job_directory(tmp_path: Path) -> None:
-    base = tmp_path / "ripple"
-    zip_path = _make_zip(
-        tmp_path,
-        {
-            "myapp/__init__.py": "",
-            "myapp/models.py": "from myapp.utils import helper\n",
-            "myapp/utils.py": "helper = 1\n",
-        },
-    )
-    service = IngestionService(base_dir=base)
+def _mini_repo_zip(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        for py_file in FIXTURE_ROOT.rglob("*.py"):
+            rel = py_file.relative_to(FIXTURE_ROOT.parent).as_posix()
+            archive.write(py_file, rel)
 
-    result = service.ingest_zip(zip_path, job_id="test-job")
+
+@pytest.fixture
+def base_dir(tmp_path: Path) -> Path:
+    return tmp_path / "ripple"
+
+
+@pytest.fixture
+def service(base_dir: Path) -> IngestionService:
+    return IngestionService(base_dir=base_dir)
+
+
+def test_ingest_zip_extracts_to_job_directory(
+    service: IngestionService, base_dir: Path, tmp_path: Path
+) -> None:
+    zpath = tmp_path / "repo.zip"
+    _mini_repo_zip(zpath)
+
+    result = service.ingest_zip(zpath, job_id="job-1")
 
     assert isinstance(result, IngestionResult)
-    assert result.job_id == "test-job"
-    assert result.local_path == base / "test-job"
-    assert (result.local_path / "myapp/models.py").is_file()
-    assert result.python_files == {"myapp/__init__.py", "myapp/models.py", "myapp/utils.py"}
-
-
-def test_ingest_zip_bytes(tmp_path: Path) -> None:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("main.py", "x = 1\n")
-    service = IngestionService(base_dir=tmp_path / "ripple")
-
-    result = service.ingest_zip_bytes(buffer.getvalue(), job_id="bytes-job")
-
+    assert result.job_id == "job-1"
+    assert result.local_path == base_dir / "job-1"
     assert result.local_path.is_dir()
-    assert (result.local_path / "main.py").read_text(encoding="utf-8") == "x = 1\n"
+    assert (result.local_path / "mini_repo" / "myapp" / "models.py").is_file()
+    assert "mini_repo/myapp/models.py" in result.python_files
 
 
-def test_ingest_fixture_zip_runs_pipeline(tmp_path: Path) -> None:
-    zip_path = tmp_path / "mini_repo.zip"
-    with zipfile.ZipFile(zip_path, "w") as archive:
-        for path in FIXTURE_ROOT.rglob("*.py"):
-            rel = path.relative_to(FIXTURE_ROOT).as_posix()
-            archive.write(path, f"mini_repo/{rel}")
+def test_ingest_zip_bytes(service: IngestionService, tmp_path: Path) -> None:
+    zpath = tmp_path / "repo.zip"
+    _mini_repo_zip(zpath)
+    data = zpath.read_bytes()
 
-    service = IngestionService(base_dir=tmp_path / "ripple")
-    result = service.ingest_zip(zip_path)
+    result = service.ingest_zip_bytes(data, job_id="bytes-job")
 
-    pipeline_result = AnalysisPipeline().run(result.local_path / "mini_repo")
-
-    assert len(pipeline_result.graph.nodes) == 4
-    assert pipeline_result.cycles.has_cycles is True
+    assert result.job_id == "bytes-job"
+    assert "mini_repo/myapp/auth.py" in result.python_files
 
 
-def test_ingest_zip_rejects_zip_slip(tmp_path: Path) -> None:
-    zip_path = _make_zip(tmp_path, {"../escape.py": "bad\n"})
-    service = IngestionService(base_dir=tmp_path / "ripple")
+def test_ingest_zip_generates_job_id_when_omitted(
+    service: IngestionService, tmp_path: Path
+) -> None:
+    zpath = tmp_path / "repo.zip"
+    _make_zip(zpath, {"main.py": b"print('hi')\n"})
+
+    result = service.ingest_zip(zpath)
+
+    assert result.job_id
+    assert result.local_path.name == result.job_id
+    assert result.python_files == {"main.py"}
+
+
+def test_ingest_zip_missing_file_raises(service: IngestionService) -> None:
+    with pytest.raises(FileNotFoundError, match="Zip file not found"):
+        service.ingest_zip("/no/such/archive.zip")
+
+
+def test_ingest_zip_rejects_zip_slip(
+    service: IngestionService, base_dir: Path, tmp_path: Path
+) -> None:
+    zpath = tmp_path / "evil.zip"
+    _make_zip(zpath, {"../escape.py": b"x = 1\n"})
 
     with pytest.raises(ValueError, match="Unsafe path"):
-        service.ingest_zip(zip_path)
+        service.ingest_zip(zpath, job_id="slip")
+
+    assert not (base_dir / "slip").exists()
 
 
-def test_ingest_zip_missing_file(tmp_path: Path) -> None:
-    service = IngestionService(base_dir=tmp_path / "ripple")
+def test_failed_extract_removes_partial_directory(
+    service: IngestionService, base_dir: Path, tmp_path: Path
+) -> None:
+    zpath = tmp_path / "bad.zip"
+    zpath.write_bytes(b"not a zip")
 
-    with pytest.raises(FileNotFoundError):
-        service.ingest_zip(tmp_path / "missing.zip")
+    with pytest.raises(zipfile.BadZipFile):
+        service.ingest_zip(zpath, job_id="partial")
+
+    assert not (base_dir / "partial").exists()
 
 
-def test_cleanup_removes_job_directory(tmp_path: Path) -> None:
-    base = tmp_path / "ripple"
-    zip_path = _make_zip(tmp_path, {"a.py": "pass\n"})
-    service = IngestionService(base_dir=base)
-    result = service.ingest_zip(zip_path, job_id="cleanup-me")
+def test_cleanup_removes_job_directory(service: IngestionService, tmp_path: Path) -> None:
+    zpath = tmp_path / "repo.zip"
+    _make_zip(zpath, {"pkg/mod.py": b""})
 
+    result = service.ingest_zip(zpath, job_id="cleanup-me")
     assert result.local_path.is_dir()
+
     service.cleanup(result)
     assert not result.local_path.exists()
 
+    service.cleanup("cleanup-me")  # idempotent
 
-def test_ingest_zip_rolls_back_on_bad_archive(tmp_path: Path) -> None:
-    bad_zip = tmp_path / "bad.zip"
-    bad_zip.write_bytes(b"not a zip")
-    base = tmp_path / "ripple"
-    service = IngestionService(base_dir=base)
 
-    with pytest.raises(zipfile.BadZipFile):
-        service.ingest_zip(bad_zip, job_id="rollback")
+def test_ingested_repo_runs_through_pipeline(service: IngestionService, tmp_path: Path) -> None:
+    zpath = tmp_path / "repo.zip"
+    _mini_repo_zip(zpath)
 
-    assert not (base / "rollback").exists()
+    result = service.ingest_zip(zpath, job_id="pipeline")
+    try:
+        pipeline_result = AnalysisPipeline().run(result.local_path)
+        assert len(pipeline_result.analyses) == 4
+        assert pipeline_result.cycles.has_cycles is True
+        assert len(pipeline_result.scores.scores) == 4
+    finally:
+        service.cleanup(result)
