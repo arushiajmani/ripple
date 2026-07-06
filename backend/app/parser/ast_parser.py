@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import time
 from pathlib import Path
 
 from app.parser.dependencies import classify_dependencies
@@ -25,6 +26,13 @@ class ASTParser:
         self.project_files = project_files or set()
 
     def parse_file(self, file_path: str, content: str) -> FileAnalysis:
+        analysis, _, _ = self.parse_file_timed(file_path, content)
+        return analysis
+
+    def parse_file_timed(
+        self, file_path: str, content: str
+    ) -> tuple[FileAnalysis, float, float]:
+        """Parse one file; return ``(analysis, ast_ms, import_resolution_ms)``."""
         normalized_path = file_path.replace("\\", "/")
         line_count = content.count("\n") + (1 if content else 0)
 
@@ -32,12 +40,17 @@ class ASTParser:
             tree = ast.parse(content, filename=normalized_path)
         except SyntaxError:
             logger.warning("Syntax error in %s", normalized_path)
-            return FileAnalysis(
-                file_path=normalized_path,
-                line_count=line_count,
-                has_syntax_error=True,
+            return (
+                FileAnalysis(
+                    file_path=normalized_path,
+                    line_count=line_count,
+                    has_syntax_error=True,
+                ),
+                0.0,
+                0.0,
             )
 
+        ast_start = time.perf_counter()
         imports: list[ImportInfo] = []
         module_names: list[str] = []
         classes: list[ClassInfo] = []
@@ -89,20 +102,28 @@ class ASTParser:
                 elif self._is_top_level(tree, node):
                     functions.append(FunctionInfo(name=node.name))
 
+        ast_ms = (time.perf_counter() - ast_start) * 1000.0
+
+        resolve_start = time.perf_counter()
         resolved_deps, external_deps = classify_dependencies(
             module_names, self.project_files
         )
+        resolve_ms = (time.perf_counter() - resolve_start) * 1000.0
 
-        return FileAnalysis(
-            file_path=normalized_path,
-            imports=imports,
-            resolved_deps=resolved_deps,
-            external_deps=external_deps,
-            classes=classes,
-            functions=functions,
-            methods=methods,
-            line_count=line_count,
-            has_syntax_error=False,
+        return (
+            FileAnalysis(
+                file_path=normalized_path,
+                imports=imports,
+                resolved_deps=resolved_deps,
+                external_deps=external_deps,
+                classes=classes,
+                functions=functions,
+                methods=methods,
+                line_count=line_count,
+                has_syntax_error=False,
+            ),
+            ast_ms,
+            resolve_ms,
         )
 
     def _extract_method_names(self, node: ast.ClassDef) -> list[str]:

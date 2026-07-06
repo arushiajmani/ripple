@@ -27,10 +27,13 @@ Run tests from backend/:
 
 from __future__ import annotations
 
+import time
+
 import networkx as nx
 
 from app.graph.algorithms.digraph import graph_result_to_digraph
 from app.graph.models import GraphResult, NodeScore, ScoringResult
+from app.metrics import StageMetric
 
 # How much each metric contributes to criticality (must sum to 1.0).
 # Slightly favor "widely depended on" (PageRank) over "bridge" (betweenness).
@@ -72,17 +75,26 @@ class AlgorithmEngine:
         self._betweenness_weight = betweenness_weight
 
     def run(self, graph: GraphResult) -> ScoringResult:
+        result, _metrics = self.run_with_metrics(graph)
+        return result
+
+    def run_with_metrics(
+        self, graph: GraphResult
+    ) -> tuple[ScoringResult, list[StageMetric]]:
         if not graph.nodes:
-            return ScoringResult(scores=[])
+            return ScoringResult(scores=[]), []
 
         digraph = graph_result_to_digraph(graph)
 
-        # Importance flows along edges toward files that others import.
+        pr_start = time.perf_counter()
         pagerank = nx.pagerank(digraph, alpha=self._pagerank_alpha)
-        # Fraction of shortest paths that pass through each node.
-        betweenness = nx.betweenness_centrality(digraph)
+        pr_ms = (time.perf_counter() - pr_start) * 1000.0
 
-        # Scale each metric to [0, 1] within this repo before weighting.
+        bt_start = time.perf_counter()
+        betweenness = nx.betweenness_centrality(digraph)
+        bt_ms = (time.perf_counter() - bt_start) * 1000.0
+
+        norm_start = time.perf_counter()
         norm_pr = normalize_scores(pagerank)
         norm_bt = normalize_scores(betweenness)
 
@@ -90,7 +102,6 @@ class AlgorithmEngine:
         for node in graph.nodes:
             pr = pagerank[node]
             bt = betweenness[node]
-            # Relative risk score for this repo (not an absolute probability).
             criticality = (
                 self._pagerank_weight * norm_pr[node]
                 + self._betweenness_weight * norm_bt[node]
@@ -101,15 +112,20 @@ class AlgorithmEngine:
                     pagerank=pr,
                     betweenness=bt,
                     criticality=criticality,
-                    # Direct dependents (who imports me?) / dependencies (who do I import?).
                     in_degree=int(digraph.in_degree(node)),
                     out_degree=int(digraph.out_degree(node)),
                 )
             )
 
-        # Highest criticality first; tie-break by path for stable output.
         scores.sort(key=lambda s: (-s.criticality, s.file_path))
-        return ScoringResult(scores=scores)
+        norm_ms = (time.perf_counter() - norm_start) * 1000.0
+
+        metrics = [
+            StageMetric("pagerank_computation", pr_ms, files_processed=None),
+            StageMetric("betweenness_computation", bt_ms, files_processed=None),
+            StageMetric("score_normalization", norm_ms, files_processed=None),
+        ]
+        return ScoringResult(scores=scores), metrics
 
     # Alias matching CycleDetector.detect naming.
     score = run

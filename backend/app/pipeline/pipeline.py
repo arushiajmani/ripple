@@ -8,7 +8,7 @@ CLI: python -m app.pipeline <repo-path>
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -20,8 +20,9 @@ from app.graph.models import (
     GraphResult,
     ScoringResult,
 )
+from app.metrics import StageMetric, StageTimer
 from app.parser.models import FileAnalysis
-from app.parser.repository import parse_repository
+from app.parser.repository import parse_repository_with_metrics
 
 
 @dataclass
@@ -39,6 +40,7 @@ class PipelineResult:
     graph: GraphResult
     cycles: CircularDependencyResult
     scores: ScoringResult
+    metrics: list[StageMetric] = field(default_factory=list)
 
     def to_dict(
         self,
@@ -107,13 +109,27 @@ class AnalysisPipeline:
 
     def run(self, repo_path: str | Path) -> PipelineResult:
         # Paths must be relative to the project root (see analysis root convention).
-        analyses = parse_repository(repo_path)
-        graph = self._graph_builder.build(analyses)
-        cycles = self._cycle_detector.detect(graph)
-        scores = self._algorithm_engine.score(graph)
+        analyses, parse_metrics = parse_repository_with_metrics(repo_path)
+        file_count = len(analyses)
+
+        with StageTimer() as graph_timer:
+            graph = self._graph_builder.build(analyses)
+            cycles = self._cycle_detector.detect(graph)
+
+        graph_metrics = [
+            StageMetric(
+                "graph_construction",
+                graph_timer.duration_ms,
+                files_processed=file_count,
+            )
+        ]
+        scores, score_metrics = self._algorithm_engine.run_with_metrics(graph)
+        metrics = [*parse_metrics, *graph_metrics, *score_metrics]
+
         return PipelineResult(
             analyses=analyses,
             graph=graph,
             cycles=cycles,
             scores=scores,
+            metrics=metrics,
         )

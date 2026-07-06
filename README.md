@@ -15,11 +15,12 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 * **Analysis pipeline** — parse → graph → cycles → scores (`PipelineResult`)
 * **JSON export** — `result.write_json("result.json")` or `python -m app.pipeline <repo> --json result.json`
 * **CLI** — parser: `python -m app.parser.cli`; pipeline: `python -m app.pipeline` (report + optional JSON)
+* **Zip ingestion** — `IngestionService`: extract upload to `/tmp/ripple/{job_id}/`, then run pipeline; `cleanup()` when done
+* **Pipeline metrics** — per-stage timings on `PipelineResult.metrics`
+* **Benchmark CLI** — `python -m app.benchmark --repo path/to/project`
 
 ### Planned (near term)
 
-* **Zip ingestion** — `IngestionService`: extract upload to `/tmp/ripple/{job_id}/`, then run pipeline; `cleanup()` when done
-* Pipeline stage metrics and benchmark CLI (`python -m app.benchmark --repo path/to/project`)
 * Impact analysis for proposed changes
 * Interactive graph visualization
 * REST API for repository analysis
@@ -101,6 +102,8 @@ ripple/
 │   │   ├── graph/
 │   │   │   ├── models.py        # GraphResult
 │   │   │   └── builder.py       # GraphBuilder
+│   │   ├── benchmark/
+│   │   │   └── __main__.py    # python -m app.benchmark --repo <path>
 │   │   ├── ingestion/
 │   │   │   └── service.py       # IngestionService (zip → /tmp/ripple/{job_id}/)
 │   │   └── pipeline/
@@ -268,15 +271,20 @@ result.scores.top(10)  # highest-criticality NodeScore list
 # JSON: metadata, summary, statistics, graph, analysis (scores), files
 # Top N in JSON: analysis.scores.slice(0, N) — no separate top_critical field
 result.write_json("result.json")
+result.metrics   # list[StageMetric] — per-stage timings (ms)
 ```
-# NodeScore fields:
-#   pagerank     — how depended-on (importance flows to shared modules)
-#   betweenness  — bridge / bottleneck on paths between other files
-#   criticality  — 0.6 * norm(PR) + 0.4 * norm(BT); relative change-risk
-#   in_degree    — # of project files that import this file
-#   out_degree   — # of project files this file imports
 
-### Zip ingestion
+### Benchmark
+
+Profile stage timings on a local repo:
+
+```bash
+python -m app.benchmark --repo tests/fixtures/mini_repo
+```
+
+Stages: `file_discovery`, `ast_parsing`, `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization`.
+
+NodeScore fields: `pagerank`, `betweenness`, `criticality`, `in_degree`, `out_degree`.
 
 Extract an uploaded archive, analyze, then clean up:
 
@@ -325,11 +333,12 @@ From `backend/` (requires `PYTHONPATH=.` so Python finds the `app` package):
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 71 tests (-v = verbose, one line per test)
+PYTHONPATH=. pytest tests/ -v                    # all 77 tests (-v = verbose, one line per test)
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
 PYTHONPATH=. pytest tests/test_ingestion.py -v   # ingestion (8)
+PYTHONPATH=. pytest tests/test_benchmark.py -v   # metrics + benchmark (6)
 PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (14)
 PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (12)
 ```
@@ -340,6 +349,7 @@ PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (12)
 | **`test_graph.py`** | 9 | Empty/single-node graphs; dependency edges; dedup; missing deps; cycles; self-loops; dict-key semantics; syntax-error files |
 | **`test_pipeline.py`** | 9 | End-to-end parse → graph → cycles → scores; `test_small_cycle`; `mini_repo` integration |
 | **`test_ingestion.py`** | 8 | Zip extract, zip-slip rejection, cleanup, pipeline integration |
+| **`test_benchmark.py`** | 6 | Stage metrics on `PipelineResult`, table formatting |
 | **`test_serialize.py`** | 14 | metadata, summary, statistics, graph, analysis, files |
 | **`test_cycles.py`** | 8 | `CycleDetector`: empty/acyclic graphs, simple cycles, self-loops, disjoint cycles, normalization |
 | **`test_scoring.py`** | 12 | `AlgorithmEngine`: normalize, PageRank fan-in, betweenness bridge, criticality weights, `top()` |
@@ -388,4 +398,4 @@ npm run dev
 * [x] `AlgorithmEngine` — PageRank, betweenness, criticality (`test_scoring.py`, 12 cases)
 * [x] JSON export — `serialize.py`, `--json PATH` (`test_serialize.py`)
 * [x] `IngestionService` (zip upload, temp extract, cleanup)
-* [ ] Pipeline stage metrics and benchmark CLI
+* [x] Pipeline stage metrics and benchmark CLI

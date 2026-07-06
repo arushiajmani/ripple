@@ -84,7 +84,7 @@ AlgorithmEngine           ←  ScoringResult (PipelineResult.scores)
 PostgreSQL / JSON / API / React
 ```
 
-**Shipped today:** Parser, `GraphBuilder`, `CycleDetector`, `AlgorithmEngine`, `AnalysisPipeline` (parse → graph → cycles → scores). Ingestion, metrics, and API are planned.
+**Shipped today:** Parser, `GraphBuilder`, `CycleDetector`, `AlgorithmEngine`, `AnalysisPipeline` (parse → graph → cycles → scores), `IngestionService`, pipeline stage metrics, benchmark CLI. API and DB are planned.
 
 `FileAnalysis` is intended to remain the **canonical source of parsed code information** for all current and future graph builders. Parse once; build many graph views from the same `dict[str, FileAnalysis]`.
 
@@ -713,7 +713,7 @@ print(ast.dump(tree, indent=2))
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 71 tests
+PYTHONPATH=. pytest tests/ -v                    # all 77 tests
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser only (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder only (9)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline only (9)
@@ -1264,6 +1264,57 @@ Pass `ingestion.local_path` to `AnalysisPipeline().run()` — same as pointing t
 
 ---
 
+## Phase 1 — Benchmark CLI
+
+**Goal:** Profile per-stage pipeline timings locally (no API server).
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m app.benchmark --repo tests/fixtures/mini_repo
+```
+
+Stages (same shape as future `GET /api/status` `metrics[]`):
+
+| Stage | What it measures |
+|-------|------------------|
+| `file_discovery` | `collect_python_files` walk |
+| `ast_parsing` | AST walk per file (read + parse + extract) |
+| `import_resolution` | `classify_dependencies` per file |
+| `graph_construction` | `GraphBuilder.build` + `CycleDetector.detect` |
+| `pagerank_computation` | `nx.pagerank` |
+| `betweenness_computation` | `nx.betweenness_centrality` |
+| `score_normalization` | min-max normalize + `NodeScore` assembly |
+
+Timings live on `PipelineResult.metrics` (`list[StageMetric]`). Each metric has `stage_name`, `duration_ms`, and optional `files_processed`.
+
+```python
+from app.pipeline import AnalysisPipeline
+
+result = AnalysisPipeline().run("tests/fixtures/mini_repo")
+for m in result.metrics:
+    print(m.stage_name, m.duration_ms, m.files_processed)
+```
+
+### Test cases (`test_benchmark.py`)
+
+**6 tests** — metrics presence, `files_processed`, non-negative durations, `to_dict`, table formatting, empty repo.
+
+```bash
+PYTHONPATH=. pytest tests/test_benchmark.py -v
+```
+
+| Test | What it proves |
+|------|----------------|
+| `test_pipeline_result_includes_all_stage_metrics` | All 7 stages present in order |
+| `test_metrics_have_expected_files_processed` | File counts on parse/graph stages |
+| `test_metrics_durations_are_non_negative` | No negative ms |
+| `test_stage_metric_to_dict` | API-ready dict shape |
+| `test_format_metrics_table_includes_stages` | CLI table output |
+| `test_empty_repo_has_parse_and_graph_metrics` | Empty dir still records stages |
+
+---
+
 ## Phase 1 — Analysis Pipeline
 
 **Goal:** Connect parser, graph, cycles, and scores in one call.
@@ -1649,7 +1700,7 @@ That is why `pytest --collect-only` reports **11** tests in `test_parser.py` eve
 
 ## Testing overview
 
-**71 tests** across seven suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+**77 tests** across eight suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
 
 This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
 
@@ -1660,6 +1711,7 @@ This section is the **detailed test catalog** — what each file proves and how 
 | Parser | `test_parser.py` | 11 | Unit + integration | `ASTParser` import forms; `parse_repository` walk + resolution |
 | Graph | `test_graph.py` | 9 | Unit | `GraphBuilder` rules via synthetic `FileAnalysis` dicts |
 | Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline`; parse → graph → cycles → scores |
+| Benchmark | `test_benchmark.py` | 6 | Stage metrics, table formatting |
 | Ingestion | `test_ingestion.py` | 8 | Unit | `IngestionService`: zip path/bytes, zip-slip, cleanup |
 | Serialize | `test_serialize.py` | 14 | Unit | JSON (`metadata` / `summary` / `statistics` / `graph` / …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `GraphResult` |
@@ -1780,7 +1832,7 @@ Read [Roadmap.md](./Roadmap.md) for week-by-week tasks. Short preview:
 
 | Component | What it will do |
 |-----------|-----------------|
-| Pipeline stage metrics + benchmark CLI | Per-stage timings (`python -m app.benchmark`) |
+| Pipeline stage metrics + benchmark CLI | Shipped — `PipelineResult.metrics`, `python -m app.benchmark` |
 | REST API + Postgres | Persist results, async jobs, graph/impact endpoints |
 | End-to-end on 3 real repos | Manual validation milestone |
 

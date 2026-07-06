@@ -137,8 +137,8 @@ Full property glossary: [learn.md — What each property means](./learn.md#1-wha
 - [x] Walk directory tree, collect all `.py` files — via `parse_repository()` / `collect_python_files()`
 - [x] Filter out virtual environments (`venv/`, `.venv/`, `env/`), build artifacts (`__pycache__/`, `*.pyc`), test files (optional — include for now, filter later) — via `SKIP_DIRS` in `parser/models.py`
 - [ ] Wire `IngestionService` → `AnalysisPipeline` in API layer — partial: call `ingest_zip` then `AnalysisPipeline.run(ingestion.local_path)` then `cleanup` (see learn.md)
-- [ ] Instrument every pipeline stage with timing: `file_discovery`, `ast_parsing` (total + per-file average), `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization` — timings held on `PipelineResult`
-- [ ] Add benchmark CLI: `python -m app.benchmark --repo path/to/project` — runs the pipeline and prints a formatted timing breakdown to stdout (for performance testing on large repos)
+- [x] Instrument every pipeline stage with timing: `file_discovery`, `ast_parsing` (total + per-file average), `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization` — timings on `PipelineResult.metrics`
+- [x] Add benchmark CLI: `python -m app.benchmark --repo path/to/project` — runs the pipeline and prints a formatted timing breakdown to stdout (for performance testing on large repos)
 - [x] Output complete result as a JSON file — `python -m app.pipeline <repo> --json result.json`
 - [ ] Clean up temp directory after analysis
 - [ ] Test end-to-end on 3 different real Python projects of varying sizes
@@ -152,8 +152,8 @@ cd backend && PYTHONPATH=. pytest tests/test_ingestion.py -v
 # Manual: zip fixture → ingest → pipeline → JSON
 python -m app.pipeline tests/fixtures/mini_repo --json result.json
 
-# Future: zip path via CLI / API
-# python -m app.benchmark --repo path/to/project
+# Benchmark: per-stage timing breakdown
+python -m app.benchmark --repo tests/fixtures/mini_repo
 ```
 
 The JSON output is correct, complete, and makes intuitive sense for a project you understand.

@@ -141,8 +141,8 @@ def test_ignore_missing_deps(
         ),
     }
     monkeypatch.setattr(
-        "app.pipeline.pipeline.parse_repository",
-        lambda _path: analyses,
+        "app.pipeline.pipeline.parse_repository_with_metrics",
+        lambda _path: (analyses, []),
     )
 
     result = pipeline.run(tmp_path)
