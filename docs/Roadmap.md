@@ -203,7 +203,6 @@ Unresolvable imports (third-party packages like `import requests`) should be tra
 **Exit condition:** All API endpoints functional and testable via Swagger UI at `/docs`
 
 ---
-
 ### Week 4 — Database + Core Endpoints
 
 #### Tasks
