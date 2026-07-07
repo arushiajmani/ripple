@@ -208,7 +208,7 @@ Unresolvable imports (third-party packages like `import requests`) should be tra
 #### Tasks
 
 - [ ] Set up Alembic for database migrations
-- [ ] Implement all tables from the schema in the SRS (repositories, files, dependencies, node_scores, cycles)
+- [ ] Implement all tables from the schema in the SRS (`repositories`, `analysis_jobs`, `files`, `dependencies`, `node_scores`, `cycles`, `cycle_members`, `analysis_statistics`)
 - [ ] Implement `POST /api/analyze` (full) — async 202, job record in PostgreSQL, background analysis *(sync zip + GitHub wired in Week 3 — see `app/api/routes.py`)*
 - [ ] Implement `GET /api/status/{repo_id}` — returns current job status; includes `metrics` array (stage durations) once analysis is complete
 - [ ] Implement background task that runs `AnalysisPipeline` and writes results to PostgreSQL

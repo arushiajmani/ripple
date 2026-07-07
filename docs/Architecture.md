@@ -245,7 +245,8 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │                      PostgreSQL                              │  │
-│  │  repositories | files | dependencies | node_scores | cycles  │  │
+│  │  repositories | analysis_jobs | files | dependencies |      │  │
+│  │  node_scores | cycles | cycle_members | analysis_statistics │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -491,57 +492,108 @@ class GraphResult:
 
 Top critical files: use `ScoringResult.top(n)` in Python or `analysis.scores.slice(0, n)` in JSON clients — not a separate field.
 
-### PostgreSQL Schema
+### PostgreSQL Schema (planned)
+
+See [SRS — Database Schema](./SRS_ProjectPlan.md#7-database-schema) for full rationale. Summary:
+
+| Table | Role |
+|-------|------|
+| `repositories` | Stable identity: `owner`, `repo_name`, `branch`, `commit_sha` (not raw URL) |
+| `analysis_jobs` | One row per analysis run (`status`, timings) |
+| `files` | Per-job file index + `language`, `syntax_error`, `sha256` |
+| `dependencies` | Edges with `dependency_type` (`import`, future: `inheritance`, `call`, …) |
+| `node_scores` | `composite_score` (not `criticality_score`) + PageRank / betweenness |
+| `cycles` + `cycle_members` | Normalized cycles (query by file via `cycle_members`) |
+| `analysis_statistics` | Cached counts / density — avoid recomputing per request |
 
 ```sql
 CREATE TABLE repositories (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    github_url   TEXT,                    -- NULL for zip uploads
-    file_hash    TEXT UNIQUE,             -- SHA256 of uploaded zip (idempotency)
-    name         TEXT,
-    status       TEXT NOT NULL DEFAULT 'pending',
-    error_msg    TEXT,                    -- Set if status = 'failed'
-    created_at   TIMESTAMP DEFAULT NOW(),
-    completed_at TIMESTAMP
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source           TEXT NOT NULL,
+    owner            TEXT,
+    repo_name        TEXT NOT NULL,
+    branch           TEXT,
+    commit_sha       TEXT,
+    default_branch   TEXT,
+    file_hash        TEXT UNIQUE,
+    analysis_version TEXT NOT NULL DEFAULT '1',
+    created_by       TEXT,
+    created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (owner, repo_name, branch)
+);
+
+CREATE TABLE analysis_jobs (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    repo_id       UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    error_msg     TEXT,
+    started_at    TIMESTAMP,
+    completed_at  TIMESTAMP,
+    duration_ms   INTEGER,
+    created_at    TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE files (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repo_id     UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-    file_path   TEXT NOT NULL,
-    line_count  INTEGER,
-    UNIQUE(repo_id, file_path)
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id        UUID NOT NULL REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+    file_path     TEXT NOT NULL,
+    language      TEXT NOT NULL DEFAULT 'python',
+    line_count    INTEGER,
+    syntax_error  BOOLEAN NOT NULL DEFAULT FALSE,
+    sha256        TEXT,
+    UNIQUE (job_id, file_path)
 );
 
 CREATE TABLE dependencies (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repo_id         UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-    source_file_id  UUID NOT NULL REFERENCES files(id),
-    target_file_id  UUID NOT NULL REFERENCES files(id),
-    import_type     TEXT    -- 'absolute' | 'relative' | 'from'
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id           UUID NOT NULL REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+    source_file_id   UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    target_file_id   UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    dependency_type  TEXT NOT NULL DEFAULT 'import',
+    UNIQUE (job_id, source_file_id, target_file_id, dependency_type)
 );
 
 CREATE TABLE node_scores (
-    file_id             UUID PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
-    pagerank_score      FLOAT NOT NULL,
-    betweenness_score   FLOAT NOT NULL,
-    criticality_score   FLOAT NOT NULL,
-    in_degree           INTEGER NOT NULL,
-    out_degree          INTEGER NOT NULL
+    file_id            UUID PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    job_id             UUID NOT NULL REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+    pagerank_score     FLOAT NOT NULL,
+    betweenness_score  FLOAT NOT NULL,
+    composite_score    FLOAT NOT NULL,
+    in_degree          INTEGER NOT NULL,
+    out_degree         INTEGER NOT NULL
 );
 
 CREATE TABLE cycles (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repo_id     UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-    cycle_files TEXT[] NOT NULL
+    id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id   UUID NOT NULL REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+    length   INTEGER NOT NULL
 );
 
--- Indexes for query performance
-CREATE INDEX idx_files_repo ON files(repo_id);
-CREATE INDEX idx_deps_repo ON dependencies(repo_id);
-CREATE INDEX idx_deps_source ON dependencies(source_file_id);
-CREATE INDEX idx_deps_target ON dependencies(target_file_id);
-CREATE INDEX idx_scores_criticality ON node_scores(criticality_score DESC);
+CREATE TABLE cycle_members (
+    cycle_id  UUID NOT NULL REFERENCES cycles(id) ON DELETE CASCADE,
+    file_id   UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    position  INTEGER NOT NULL,
+    PRIMARY KEY (cycle_id, position),
+    UNIQUE (cycle_id, file_id)
+);
+
+CREATE TABLE analysis_statistics (
+    job_id                    UUID PRIMARY KEY REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+    file_count                INTEGER NOT NULL,
+    node_count                INTEGER NOT NULL,
+    edge_count                INTEGER NOT NULL,
+    cycle_count               INTEGER NOT NULL,
+    external_dependency_count INTEGER NOT NULL DEFAULT 0,
+    class_count               INTEGER NOT NULL DEFAULT 0,
+    function_count            INTEGER NOT NULL DEFAULT 0,
+    graph_density             FLOAT,
+    computed_at               TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_analysis_jobs_repo ON analysis_jobs(repo_id);
+CREATE INDEX idx_files_job ON files(job_id);
+CREATE INDEX idx_cycle_members_file ON cycle_members(file_id);
+CREATE INDEX idx_node_scores_composite ON node_scores(composite_score DESC);
 ```
 
 ---
@@ -663,7 +715,7 @@ Response 200:
   "nodes": [
     {
       "id": "auth/session.py",
-      "criticality_score": 0.87,
+      "composite_score": 0.87,
       "pagerank": 0.043,
       "betweenness": 0.21,
       "in_degree": 12,
@@ -694,7 +746,7 @@ Query params:
 Response 200:
 {
   "target_file": "auth/session.py",
-  "criticality_score": 0.87,
+  "composite_score": 0.87,
   "direct_dependents": ["api/routes.py", "tests/test_auth.py"],
   "all_dependents": ["api/routes.py", "tests/test_auth.py", "main.py"],
   "direct_count": 2,
@@ -844,10 +896,10 @@ Complete trace from zip upload or GitHub URL to graph appearing on screen.
          └── New hash → continue
          │
          ▼
-4.  Create Repository record in PostgreSQL (status='processing')
+4.  Upsert `repositories` (owner/repo_name/branch or zip file_hash); create `analysis_jobs` row (status='processing')
          │
          ▼
-5.  Return 202: { repo_id, status: "processing" } immediately
+5.  Return 202: { job_id, repo_id, status: "processing" } immediately
          │
          ▼ (background task starts)
 6.  IngestionService:
@@ -887,11 +939,11 @@ Complete trace from zip upload or GitHub URL to graph appearing on screen.
          │
          ▼
 10. Write results to PostgreSQL:
-    - dependencies table (all edges)
-    - node_scores table (all scores)
-    - cycles table (all detected cycles)
-    - Update repositories.status = 'complete'
-    - Clean up /tmp/ripple/{repo_id}/
+    - files (with sha256, syntax_error), dependencies (dependency_type='import')
+    - node_scores (composite_score), cycles + cycle_members
+    - analysis_statistics (file_count, edge_count, density, …)
+    - Update analysis_jobs.status = 'complete', duration_ms
+    - Clean up /tmp/ripple/{job_id}/
          │
          ▼
 11. Frontend polling detects status='complete' (metrics[] available in response)

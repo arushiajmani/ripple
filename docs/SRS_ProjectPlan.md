@@ -428,65 +428,156 @@ Neo4j is a graph database. It would make graph traversal queries elegant (using 
 
 The right answer to "why not Neo4j?" is: "I evaluated it, but since I'm using NetworkX for algorithm execution, Neo4j would be persistence-only. PostgreSQL handles that with less operational overhead, and I can always migrate graph traversal queries to Neo4j if I need to scale."
 
-**Schema:**
+### Design principles
+
+| Principle | Rationale |
+|-----------|-----------|
+| **Normalize identities, not URLs** | `https://github.com/pallets/click`, `…/click.git`, and `…/click/` are the same repo — store `owner` + `repo_name`, not a raw URL |
+| **Version analysis runs** | Algorithms evolve; `analysis_version` + `analysis_jobs` let you compare runs and re-analyze without losing history |
+| **Normalize cycles** | `cycle_files TEXT[]` makes queries like "every cycle containing `core.py`" awkward — use `cycles` + `cycle_members` |
+| **Cache statistics** | Don't recompute `file_count`, `edge_count`, density on every `GET /api/graph` — persist in `analysis_statistics` |
+| **Hash file content** | `files.sha256` enables incremental analysis (skip unchanged files on re-run) |
+
+**Note:** Shipped JSON export still uses `criticality` in `analysis.scores` (in-memory `NodeScore`). The database column is `composite_score` — same weighted formula (`0.6 * norm(PR) + 0.4 * norm(BT)`), neutral name for storage.
+
+### Schema (planned)
 
 ```sql
--- Tracks each repository analysis job
+-- Logical repository (GitHub or zip upload)
 CREATE TABLE repositories (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    github_url  TEXT NOT NULL UNIQUE,
-    owner       TEXT,
-    name        TEXT,
-    status      TEXT NOT NULL DEFAULT 'pending',
-    -- status: pending | processing | complete | failed
-    created_at  TIMESTAMP DEFAULT NOW(),
-    completed_at TIMESTAMP
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source           TEXT NOT NULL,          -- 'github' | 'zip'
+    owner            TEXT,                   -- GitHub org/user; NULL for zip
+    repo_name        TEXT NOT NULL,          -- GitHub repo or zip stem
+    branch           TEXT,                   -- analyzed branch (GitHub)
+    commit_sha       TEXT,                   -- pinned commit when known
+    default_branch   TEXT,                   -- e.g. 'main'
+    file_hash        TEXT UNIQUE,            -- SHA-256 of zip bytes (zip idempotency)
+    analysis_version TEXT NOT NULL DEFAULT '1',  -- Ripple algorithm/schema version
+    created_by       TEXT,                   -- future: user id or 'anonymous'
+    created_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (owner, repo_name, branch)        -- NULLS NOT DISTINCT in PG15+ for zip rows
 );
 
--- Each Python file found in the repository
+-- One row per analysis execution (repo may be analyzed many times)
+CREATE TABLE analysis_jobs (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    repo_id       UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    -- pending | processing | complete | failed
+    error_msg     TEXT,
+    started_at    TIMESTAMP,
+    completed_at  TIMESTAMP,
+    duration_ms   INTEGER,
+    created_at    TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Each Python file discovered in a job
 CREATE TABLE files (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repo_id     UUID NOT NULL REFERENCES repositories(id),
-    file_path   TEXT NOT NULL,   -- e.g., "auth/session.py"
-    lines_count INTEGER,
-    UNIQUE(repo_id, file_path)
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id        UUID NOT NULL REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+    file_path     TEXT NOT NULL,
+    language      TEXT NOT NULL DEFAULT 'python',
+    line_count    INTEGER,
+    syntax_error  BOOLEAN NOT NULL DEFAULT FALSE,
+    sha256        TEXT,                      -- content hash for incremental skip
+    UNIQUE (job_id, file_path)
 );
 
--- Dependency edges between files
+-- Directed edges between files (extensible beyond imports)
 CREATE TABLE dependencies (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repo_id         UUID NOT NULL REFERENCES repositories(id),
-    source_file_id  UUID NOT NULL REFERENCES files(id),
-    target_file_id  UUID NOT NULL REFERENCES files(id),
-    import_type     TEXT  -- 'import' or 'from_import'
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id           UUID NOT NULL REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+    source_file_id   UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    target_file_id   UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    dependency_type  TEXT NOT NULL DEFAULT 'import',
+    -- import | inheritance | call | type_hint | dynamic_import (future)
+    UNIQUE (job_id, source_file_id, target_file_id, dependency_type)
 );
 
--- Computed algorithm scores per file
+-- Algorithm scores per file (one row per file per job)
 CREATE TABLE node_scores (
-    file_id             UUID PRIMARY KEY REFERENCES files(id),
-    pagerank_score      FLOAT,
-    betweenness_score   FLOAT,
-    criticality_score   FLOAT,  -- composite
-    in_degree           INTEGER,  -- how many files import this
-    out_degree          INTEGER   -- how many files this imports
+    file_id            UUID PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    job_id             UUID NOT NULL REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+    pagerank_score     FLOAT NOT NULL,
+    betweenness_score  FLOAT NOT NULL,
+    composite_score    FLOAT NOT NULL,       -- 0.6*norm(PR) + 0.4*norm(BT)
+    in_degree          INTEGER NOT NULL,
+    out_degree         INTEGER NOT NULL
 );
 
--- Detected circular dependency cycles
+-- Circular dependency (header)
 CREATE TABLE cycles (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    repo_id     UUID NOT NULL REFERENCES repositories(id),
-    cycle_files TEXT[]   -- array of file paths forming the cycle
+    id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_id   UUID NOT NULL REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+    length   INTEGER NOT NULL
+);
+
+-- Ordered members of each cycle (position 0..n-1 along the loop)
+CREATE TABLE cycle_members (
+    cycle_id  UUID NOT NULL REFERENCES cycles(id) ON DELETE CASCADE,
+    file_id   UUID NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    position  INTEGER NOT NULL,
+    PRIMARY KEY (cycle_id, position),
+    UNIQUE (cycle_id, file_id)
+);
+
+-- Precomputed repo-level stats (avoid recomputing on every read)
+CREATE TABLE analysis_statistics (
+    job_id                    UUID PRIMARY KEY REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+    file_count                INTEGER NOT NULL,
+    node_count                INTEGER NOT NULL,
+    edge_count                INTEGER NOT NULL,
+    cycle_count               INTEGER NOT NULL,
+    external_dependency_count INTEGER NOT NULL DEFAULT 0,
+    class_count               INTEGER NOT NULL DEFAULT 0,
+    function_count            INTEGER NOT NULL DEFAULT 0,
+    graph_density             FLOAT,           -- edges / (n*(n-1)) for directed simple graph
+    computed_at               TIMESTAMP NOT NULL DEFAULT NOW()
 );
 ```
 
-**Index Strategy:**
+**Example queries enabled by normalization:**
 
 ```sql
--- Speed up all queries that filter by repo
-CREATE INDEX idx_files_repo_id ON files(repo_id);
-CREATE INDEX idx_dependencies_repo_id ON dependencies(repo_id);
-CREATE INDEX idx_node_scores_criticality ON node_scores(criticality_score DESC);
+-- Every cycle that includes core.py
+SELECT c.id, c.length
+FROM cycles c
+JOIN cycle_members cm ON cm.cycle_id = c.id
+JOIN files f ON f.id = cm.file_id
+WHERE f.file_path = 'src/click/core.py'
+  AND c.job_id = :job_id;
+
+-- Latest completed analysis for pallets/click
+SELECT j.*
+FROM analysis_jobs j
+JOIN repositories r ON r.id = j.repo_id
+WHERE r.owner = 'pallets' AND r.repo_name = 'click'
+ORDER BY j.completed_at DESC NULLS LAST
+LIMIT 1;
 ```
+
+**Index strategy:**
+
+```sql
+CREATE INDEX idx_analysis_jobs_repo ON analysis_jobs(repo_id);
+CREATE INDEX idx_analysis_jobs_status ON analysis_jobs(status);
+CREATE INDEX idx_files_job ON files(job_id);
+CREATE INDEX idx_files_sha256 ON files(job_id, sha256);
+CREATE INDEX idx_dependencies_job ON dependencies(job_id);
+CREATE INDEX idx_dependencies_source ON dependencies(source_file_id);
+CREATE INDEX idx_dependencies_target ON dependencies(target_file_id);
+CREATE INDEX idx_node_scores_job ON node_scores(job_id);
+CREATE INDEX idx_node_scores_composite ON node_scores(composite_score DESC);
+CREATE INDEX idx_cycles_job ON cycles(job_id);
+CREATE INDEX idx_cycle_members_file ON cycle_members(file_id);
+```
+
+**Idempotency (ingestion → DB):**
+
+- **GitHub:** upsert `repositories` on `(owner, repo_name, branch)`; parse URL at the API layer only
+- **Zip:** dedupe on `file_hash` before starting a new job
+- **Re-analysis:** same repo, new `analysis_jobs` row; compare `analysis_version` and `files.sha256` for incremental parse
 
 ---
 
@@ -529,7 +620,7 @@ GET    /api/graph/{repo_id}
            "nodes": [
                {
                    "id": "auth/session.py",
-                   "criticality_score": 0.87,
+                   "composite_score": 0.87,
                    "pagerank": 0.043,
                    "betweenness": 0.21,
                    "in_degree": 12,
@@ -537,13 +628,14 @@ GET    /api/graph/{repo_id}
                }, ...
            ],
            "edges": [
-               { "source": "auth/session.py", "target": "utils/crypto.py" }, ...
+               { "source": "auth/session.py", "target": "utils/crypto.py", "type": "import" }, ...
            ],
            "cycles": [
-               ["auth.py", "session.py", "user.py"], ...
-           ]
+               { "length": 3, "nodes": ["auth.py", "session.py", "user.py"] }, ...
+           ],
+           "statistics": { "file_count": 47, "edge_count": 89, "cycle_count": 2, ... }
        }
-       Purpose:  Fetch complete graph for visualization (top N files = first N in scores)
+       Purpose:  Fetch complete graph for visualization (stats from analysis_statistics)
 
 GET    /api/impact/{repo_id}?file=auth/session.py
        Response: {
@@ -594,7 +686,7 @@ App
 **Node color encoding:**
 
 ```
-criticality_score > 0.7   →  Red    (high risk)
+criticality_score > 0.7   →  Red    (high risk)   — UI maps from composite_score
 criticality_score > 0.4   →  Orange (medium risk)
 criticality_score > 0.0   →  Green  (low risk)
 ```
