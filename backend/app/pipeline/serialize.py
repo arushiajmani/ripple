@@ -8,6 +8,7 @@ new top-level keys:
 
     {
       "metadata":    { "generated_at" },
+      "repository":  { "name", "source" },
       "summary":     { graph-level counts },
       "statistics":  { parser / source-code counts },
       "graph":       { "nodes", "edges" },
@@ -25,6 +26,9 @@ Design notes:
   is ``"imports"`` today. ``inherits`` / ``calls`` wait on class/call resolution
   (see docs/learn.md — Why not type inherits yet).
 * **Deterministic ordering** — sorted file keys; scores already criticality-desc.
+* **Rounded floats** — pagerank, betweenness, and criticality are rounded to
+  four decimal places in JSON (``JSON_FLOAT_DECIMALS``); in-memory ``NodeScore``
+  values keep full precision for sorting and tests.
 
 Usage:
     data = pipeline_result_to_dict(result)
@@ -49,11 +53,20 @@ from app.parser.models import (
     FileAnalysis,
     FunctionInfo,
     ImportInfo,
+    format_import_display,
 )
 from app.pipeline.pipeline import PipelineResult
 
 # Edge kind for the file import graph (extensible later: calls, inherits, …).
 EDGE_TYPE_IMPORTS = "imports"
+
+# Decimal places for pagerank / betweenness / criticality in JSON export.
+JSON_FLOAT_DECIMALS = 4
+
+
+def round_json_float(value: float) -> float:
+    """Round algorithm scores for API/JSON output (full precision kept in memory)."""
+    return round(value, JSON_FLOAT_DECIMALS)
 
 
 # --- Small field serializers (parser / graph models → plain dicts) ---
@@ -65,7 +78,12 @@ def import_info_to_dict(item: ImportInfo) -> dict[str, Any]:
         "type": item.type,
         "alias": item.alias,
         "name": item.name,
-        "display": item.display,
+        "display": format_import_display(
+            import_type=item.type,
+            module=item.module,
+            alias=item.alias,
+            name=item.name,
+        ),
     }
 
 
@@ -103,9 +121,9 @@ def node_score_to_dict(score: NodeScore) -> dict[str, Any]:
     """Per-file metrics (see NodeScore / learn.md glossary)."""
     return {
         "file_path": score.file_path,
-        "pagerank": score.pagerank,
-        "betweenness": score.betweenness,
-        "criticality": score.criticality,
+        "pagerank": round_json_float(score.pagerank),
+        "betweenness": round_json_float(score.betweenness),
+        "criticality": round_json_float(score.criticality),
         "in_degree": score.in_degree,
         "out_degree": score.out_degree,
     }
@@ -120,6 +138,11 @@ def build_metadata(*, generated_at: datetime | None = None) -> dict[str, Any]:
     # Stable Z suffix for UTC (easier for clients than +00:00).
     timestamp = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {"generated_at": timestamp}
+
+
+def build_repository(*, name: str, source: str) -> dict[str, str]:
+    """Where the analyzed code came from (zip, local path, GitHub, …)."""
+    return {"name": name, "source": source}
 
 
 def build_summary(result: PipelineResult) -> dict[str, Any]:
@@ -137,7 +160,7 @@ def build_statistics(result: PipelineResult) -> dict[str, Any]:
 
     Dependency fields are **repo-wide totals** (sum of list lengths across all
     files). Per-file lists live under ``files[path].resolved_deps`` /
-    ``external_deps``. ``total_internal_dependencies`` may exceed
+    ``external_deps``. ``internal_dependency_count`` may exceed
     ``summary.edge_count`` when the parser lists the same dep more than once.
     """
     analyses = result.analyses.values()
@@ -145,8 +168,8 @@ def build_statistics(result: PipelineResult) -> dict[str, Any]:
         "class_count": sum(len(a.classes) for a in analyses),
         # Module-level functions only (methods live under classes).
         "function_count": sum(len(a.functions) for a in analyses),
-        "total_internal_dependencies": sum(len(a.resolved_deps) for a in analyses),
-        "total_external_dependencies": sum(len(a.external_deps) for a in analyses),
+        "internal_dependency_count": sum(len(a.resolved_deps) for a in analyses),
+        "external_dependency_count": sum(len(a.external_deps) for a in analyses),
     }
 
 
@@ -237,11 +260,13 @@ def pipeline_result_to_dict(
     *,
     include_files: bool = True,
     generated_at: datetime | None = None,
+    repository: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Full analysis payload for JSON export or future API responses.
 
     Top-level keys (stable order for readability):
         metadata   — generated_at
+        repository — name + source (zip, local, github, …)
         summary    — graph-level counts (files, nodes, edges, cycles)
         statistics — parser / source-code counts (classes, functions, deps)
         graph      — nodes + edges (structure only)
@@ -250,11 +275,17 @@ def pipeline_result_to_dict(
     """
     payload: dict[str, Any] = {
         "metadata": build_metadata(generated_at=generated_at),
-        "summary": build_summary(result),
-        "statistics": build_statistics(result),
-        "graph": build_graph(result.graph),
-        "analysis": build_analysis(result),
     }
+    if repository is not None:
+        payload["repository"] = repository
+    payload.update(
+        {
+            "summary": build_summary(result),
+            "statistics": build_statistics(result),
+            "graph": build_graph(result.graph),
+            "analysis": build_analysis(result),
+        }
+    )
     if include_files:
         payload["files"] = build_files(result.analyses)
     return payload
@@ -266,12 +297,14 @@ def pipeline_result_to_json(
     indent: int | None = 2,
     include_files: bool = True,
     generated_at: datetime | None = None,
+    repository: dict[str, str] | None = None,
 ) -> str:
     """Serialize PipelineResult to a JSON string."""
     data = pipeline_result_to_dict(
         result,
         include_files=include_files,
         generated_at=generated_at,
+        repository=repository,
     )
     return json.dumps(data, indent=indent, ensure_ascii=False) + "\n"
 
@@ -283,6 +316,7 @@ def write_pipeline_json(
     indent: int | None = 2,
     include_files: bool = True,
     generated_at: datetime | None = None,
+    repository: dict[str, str] | None = None,
 ) -> Path:
     """Write analysis JSON to disk; returns the resolved path."""
     out = Path(path)
@@ -292,6 +326,7 @@ def write_pipeline_json(
         indent=indent,
         include_files=include_files,
         generated_at=generated_at,
+        repository=repository,
     )
     out.write_text(text, encoding="utf-8")
     return out.resolve()

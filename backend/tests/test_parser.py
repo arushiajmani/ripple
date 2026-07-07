@@ -85,6 +85,21 @@ def test_external_import_forms(
     assert analysis.resolved_deps == []
 
 
+@pytest.mark.parametrize(
+    ("content", "expected_display"),
+    [
+        ("import os\n", "import os"),
+        ("import requests\n", "import requests"),
+        ("import numpy as np\n", "import numpy as np"),
+        ("from os import path\n", "from os import path"),
+    ],
+    ids=["import_os", "import_requests", "import_aliased", "from_import"],
+)
+def test_import_display_strings(parser: ASTParser, content: str, expected_display: str) -> None:
+    analysis = parser.parse_file("standalone.py", content)
+    assert analysis.imports[0].display == expected_display
+
+
 # --- Relative imports: same package, parent package, package __init__ ---
 
 @pytest.mark.parametrize(

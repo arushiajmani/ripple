@@ -112,7 +112,7 @@ AlgorithmEngine           ←  ScoringResult (PipelineResult.scores)
 PostgreSQL / JSON / API / React
 ```
 
-**Shipped today:** Parser, `GraphBuilder`, `CycleDetector`, `AlgorithmEngine`, `AnalysisPipeline` (parse → graph → cycles → scores), `IngestionService`, pipeline stage metrics, benchmark CLI. API and DB are planned.
+**Shipped today:** Parser, `GraphBuilder`, `CycleDetector`, `AlgorithmEngine`, `AnalysisPipeline` (parse → graph → cycles → scores), `IngestionService`, pipeline stage metrics, benchmark CLI, partial REST API (`POST /api/analyze` — sync zip upload). PostgreSQL and async jobs are planned.
 
 `FileAnalysis` is intended to remain the **canonical source of parsed code information** for all current and future graph builders. Parse once; build many graph views from the same `dict[str, FileAnalysis]`.
 
@@ -1243,9 +1243,29 @@ PYTHONPATH=. pytest tests/test_ingestion.py -v
 | `test_cleanup_removes_job_directory` | `cleanup()` deletes extract dir; second call is safe |
 | `test_ingested_repo_runs_through_pipeline` | Extract → `AnalysisPipeline.run(local_path)` → 4 files, 1 cycle, 4 scores |
 
-**What these tests deliberately skip:** HTTP upload (`POST /api/analyze`), PostgreSQL persistence, default `/tmp/ripple` path (overridden in tests).
+**What these tests deliberately skip:** PostgreSQL persistence, default `/tmp/ripple` path (overridden in tests). HTTP upload is covered by `tests/test_api.py`.
 
 Also listed under [Testing overview — Ingestion tests](#ingestion-tests-test_ingestionpy).
+
+### HTTP API (`POST /api/analyze`)
+
+**Status:** Partial — synchronous zip upload; no background jobs or DB yet.
+
+```bash
+# Repo root — server running in backend/
+curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -m json.tool
+```
+
+Flow: `ingest_zip_bytes` → `AnalysisPipeline.run(local_path)` → `cleanup` (always, via `finally`). Response includes `job_id`, `status`, `repository`, and the full analysis JSON.
+
+| Check | Command |
+|-------|---------|
+| Health | `curl http://localhost:8000/health` |
+| Upload + pretty JSON | `curl -s -X POST …/api/analyze -F "file=@…zip" \| python3 -m json.tool` |
+| pytest | `PYTHONPATH=. pytest tests/test_api.py -v` |
+
+Use `python3 -m json.tool` (not `python`) if `python` is not on PATH.
 
 ### Try it yourself (manual)
 
@@ -1435,12 +1455,13 @@ result.write_json("result.json")
 ```json
 {
   "metadata": { "generated_at": "2026-07-04T12:00:00Z" },
+  "repository": { "name": "mini_repo", "source": "zip" },
   "summary": {
     "file_count", "node_count", "edge_count", "cycle_count"
   },
   "statistics": {
     "class_count", "function_count",
-    "total_internal_dependencies", "total_external_dependencies"
+    "internal_dependency_count", "external_dependency_count"
   },
   "graph": {
     "nodes": ["path.py", ...],
@@ -1456,6 +1477,7 @@ result.write_json("result.json")
 | Section | Purpose |
 |---------|---------|
 | **`metadata`** | `generated_at` (UTC ISO-8601) |
+| **`repository`** | `name` + `source` (`zip`, `local`, `github`, …) |
 | **`summary`** | Graph-level counts (files, nodes, edges, cycles) |
 | **`statistics`** | Parser / source-code counts (classes, functions, **repo-wide** dep totals) |
 | **`graph`** | Structural file import graph only |
@@ -1467,12 +1489,14 @@ result.write_json("result.json")
 | Field | Scope | Meaning |
 |-------|--------|---------|
 | **`summary.edge_count`** | Graph | Unique import edges after `GraphBuilder` (deduped) |
-| **`statistics.total_internal_dependencies`** | Whole repo | `sum(len(resolved_deps))` across all files |
-| **`statistics.total_external_dependencies`** | Whole repo | `sum(len(external_deps))` across all files |
+| **`statistics.internal_dependency_count`** | Whole repo | `sum(len(resolved_deps))` across all files |
+| **`statistics.external_dependency_count`** | Whole repo | `sum(len(external_deps))` across all files |
 | **`files[path].resolved_deps`** | One file | In-repo files this file imports |
 | **`files[path].external_deps`** | One file | Stdlib / third-party packages this file imports |
 
-`total_*` names make the rollup explicit. Per-file dependency **lists** are only under `files` — `statistics` does not repeat them. `total_internal_dependencies` may be **greater than** `summary.edge_count` if the parser recorded the same internal dep more than once before the graph deduped edges.
+Per-file dependency **lists** are only under `files` — `statistics` does not repeat them. `internal_dependency_count` may be **greater than** `summary.edge_count` if the parser recorded the same internal dep more than once before the graph deduped edges.
+
+**Score floats** in JSON (`pagerank`, `betweenness`, `criticality`) are rounded to **four decimal places** for readability; in-memory `NodeScore` values keep full precision.
 
 #### Why this layout (vs a flat top level)
 
@@ -1754,7 +1778,7 @@ That is why `pytest --collect-only` reports **11** tests in `test_parser.py` eve
 
 ## Testing overview
 
-**92 tests** across nine suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+**104 tests** across ten suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
 
 This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests) or [Architecture — CLI Reference](./Architecture.md#12-cli-reference). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
 
@@ -1762,13 +1786,14 @@ This section is the **detailed test catalog** — what each file proves and how 
 
 | Suite | File | Tests | Style | What it isolates |
 |-------|------|-------|-------|------------------|
-| Parser | `test_parser.py` | 11 | Unit + integration | `ASTParser` import forms; `parse_repository` walk + resolution |
+| Parser | `test_parser.py` | 15 | Unit + integration | `ASTParser` import forms + display; `parse_repository` |
 | Graph | `test_graph.py` | 9 | Unit | `GraphBuilder` rules via synthetic `FileAnalysis` dicts |
 | Adapter | `test_adapter.py` | 4 | Unit | `GraphAdapter`: `GraphResult` → `nx.DiGraph` |
 | Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline`; parse → graph → adapter → algorithms |
-| Benchmark | `test_benchmark.py` | 16 | Unit + integration | `StageMetric`, grouped `format_metrics_table`, `metrics_iterator`, dupes |
+| Benchmark | `test_benchmark.py` | 7 | Unit + integration | `StageMetric`, grouped `format_metrics_table`, edge cases |
 | Ingestion | `test_ingestion.py` | 8 | Unit | `IngestionService`: zip path/bytes, zip-slip, cleanup |
-| Serialize | `test_serialize.py` | 14 | Unit | JSON (`metadata` / `summary` / `statistics` / `graph` / …) |
+| API | `test_api.py` | 6 | Integration | `POST /api/analyze` — upload, errors, cleanup |
+| Serialize | `test_serialize.py` | 16 | Unit | JSON (`metadata`, `repository`, `statistics`, rounded scores, …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `nx.DiGraph` |
 | Scoring | `tests/algorithms/test_scoring.py` | 13 | Unit | `AlgorithmEngine` on synthetic `nx.DiGraph` |
 
@@ -1878,7 +1903,7 @@ Run: `PYTHONPATH=. pytest tests/test_ingestion.py -v`
 | Area | Notes |
 |------|-------|
 | Single-file pipeline input | CLI accepts dirs only |
-| API / `test_api.py` | Stub only |
+| API / `test_api.py` | `POST /api/analyze` — sync zip upload, full JSON response |
 | Syntax-error files through pipeline | Covered in graph unit tests only |
 | Five real open-source repos | Roadmap Week 1 milestone — manual / future |
 

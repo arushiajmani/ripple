@@ -48,14 +48,16 @@ class PipelineResult:
         *,
         include_files: bool = True,
         generated_at: datetime | None = None,
+        repository: dict[str, str] | None = None,
     ) -> dict:
-        """JSON-ready dict (metadata, summary, statistics, graph, analysis, files)."""
+        """JSON-ready dict (metadata, repository, summary, statistics, graph, analysis, files)."""
         from app.pipeline.serialize import pipeline_result_to_dict
 
         return pipeline_result_to_dict(
             self,
             include_files=include_files,
             generated_at=generated_at,
+            repository=repository,
         )
 
     def to_json(
@@ -64,6 +66,7 @@ class PipelineResult:
         indent: int | None = 2,
         include_files: bool = True,
         generated_at: datetime | None = None,
+        repository: dict[str, str] | None = None,
     ) -> str:
         """Serialize this result to a JSON string."""
         from app.pipeline.serialize import pipeline_result_to_json
@@ -73,6 +76,7 @@ class PipelineResult:
             indent=indent,
             include_files=include_files,
             generated_at=generated_at,
+            repository=repository,
         )
 
     def write_json(
@@ -82,6 +86,7 @@ class PipelineResult:
         indent: int | None = 2,
         include_files: bool = True,
         generated_at: datetime | None = None,
+        repository: dict[str, str] | None = None,
     ) -> Path:
         """Write analysis JSON to ``path``; returns the resolved path."""
         from app.pipeline.serialize import write_pipeline_json
@@ -92,6 +97,7 @@ class PipelineResult:
             indent=indent,
             include_files=include_files,
             generated_at=generated_at,
+            repository=repository,
         )
 
 

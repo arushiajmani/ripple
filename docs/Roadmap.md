@@ -136,11 +136,11 @@ Full property glossary: [learn.md — What each property means](./learn.md#1-wha
 - [x] Accept zip file, extract to temp directory (`/tmp/ripple/{job_id}/`)
 - [x] Walk directory tree, collect all `.py` files — via `parse_repository()` / `collect_python_files()`
 - [x] Filter out virtual environments (`venv/`, `.venv/`, `env/`), build artifacts (`__pycache__/`, `*.pyc`), test files (optional — include for now, filter later) — via `SKIP_DIRS` in `parser/models.py`
-- [ ] Wire `IngestionService` → `AnalysisPipeline` in API layer — partial: call `ingest_zip` then `AnalysisPipeline.run(ingestion.local_path)` then `cleanup` (see learn.md)
+- [x] Wire `IngestionService` → `AnalysisPipeline` in API layer — partial: call `ingest_zip` then `AnalysisPipeline.run(ingestion.local_path)` then `cleanup` (see learn.md)
 - [x] Instrument every pipeline stage with timing: `file_discovery`, `ast_parsing` (total + per-file average), `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization` — timings on `PipelineResult.metrics`
 - [x] Add benchmark CLI: `python -m app.benchmark --repo path/to/project` — runs the pipeline and prints a formatted timing breakdown to stdout (for performance testing on large repos)
 - [x] Output complete result as a JSON file — `python -m app.pipeline <repo> --json result.json`
-- [ ] Clean up temp directory after analysis
+- [x] Clean up temp directory after analysis
 - [ ] Test end-to-end on 3 different real Python projects of varying sizes
 
 #### Milestone Check
@@ -199,7 +199,7 @@ Unresolvable imports (third-party packages like `import requests`) should be tra
 
 - [ ] Set up Alembic for database migrations
 - [ ] Implement all tables from the schema in the SRS (repositories, files, dependencies, node_scores, cycles)
-- [ ] Implement `POST /api/analyze` — accepts zip file upload, creates job record, triggers background analysis
+- [ ] Implement `POST /api/analyze` (full) — async 202, job record in PostgreSQL, background analysis *(sync zip upload wired in Week 3 — see `app/api/routes.py`)*
 - [ ] Implement `GET /api/status/{repo_id}` — returns current job status; includes `metrics` array (stage durations) once analysis is complete
 - [ ] Implement background task that runs `AnalysisPipeline` and writes results to PostgreSQL
 - [ ] Implement idempotency — same zip uploaded twice returns existing result (hash the file content)
@@ -220,7 +220,7 @@ Upload a zip via `curl` or Swagger UI. Poll status endpoint until `"complete"`. 
 - [ ] Implement `GET /api/repos` — returns list of all analyzed repos
 - [ ] Add proper HTTP error responses (404 for unknown repo_id, 422 for invalid inputs)
 - [ ] Add CORS configuration so React frontend can call the API
-- [ ] Write integration tests for all endpoints using FastAPI's `TestClient`
+- [ ] Write integration tests for all endpoints using FastAPI's `TestClient` *(partial: `tests/test_api.py` covers sync `POST /api/analyze`)*
 
 #### Milestone Check
 

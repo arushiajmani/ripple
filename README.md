@@ -41,6 +41,7 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 * **JSON export** — `result.write_json("result.json")` or `python -m app.pipeline <repo> --json result.json`
 * **CLI** — parser: `python -m app.parser.cli`; pipeline: `python -m app.pipeline` (report + optional JSON)
 * **Zip ingestion** — `IngestionService`: extract upload to `/tmp/ripple/{job_id}/`, then run pipeline; `cleanup()` when done
+* **REST API (partial)** — `POST /api/analyze` accepts a zip upload, runs ingest → pipeline → cleanup synchronously, returns full analysis JSON
 * **Pipeline metrics** — per-stage timings on `PipelineResult.metrics`
 * **Benchmark CLI** — `python -m app.benchmark --repo path/to/project`
 
@@ -48,7 +49,7 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 
 * Impact analysis for proposed changes
 * Interactive graph visualization
-* REST API for repository analysis
+* Async API (202 + background jobs, PostgreSQL persistence, status/graph endpoints)
 
 ### Future scope — V1 / V2 / V3
 
@@ -360,6 +361,23 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
+### API (zip upload)
+
+From the **repo root** (path to the zip is relative to where you run curl):
+
+```bash
+# Start server (in backend/)
+cd backend && source .venv/bin/activate && uvicorn app.main:app --reload
+
+# Upload mini_repo fixture and pretty-print JSON (repo root, another terminal)
+curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -m json.tool
+```
+
+Returns `job_id`, `status`, `repository` (`name` + `source`), and the full analysis payload. Score floats are rounded to four decimal places in JSON.
+
+Health check: `curl http://localhost:8000/health`
+
 ### Tests
 
 From `backend/` (requires `PYTHONPATH=.` so Python finds the `app` package). **Full command reference (analysis CLIs + pytest + manual checks):** [Architecture — CLI Reference](docs/Architecture.md#12-cli-reference).
@@ -381,6 +399,7 @@ python -m app.parser.cli tests/fixtures/mini_repo
 python -m app.pipeline tests/fixtures/mini_repo
 python -m app.benchmark --repo tests/fixtures/mini_repo
 PYTHONPATH=. pytest tests/test_ingestion.py -v   # zip tests (no zip CLI yet)
+PYTHONPATH=. pytest tests/test_api.py -v         # HTTP upload → pipeline (6)
 ```
 
 Use any directory as `<repo-path>` for parser / pipeline / benchmark. Full sheet: [Architecture — Command sheet](docs/Architecture.md#command-sheet-all-inputs).
@@ -389,13 +408,14 @@ Use any directory as `<repo-path>` for parser / pipeline / benchmark. Full sheet
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/test_parser.py -v      # parser (11)
+PYTHONPATH=. pytest tests/test_parser.py -v      # parser (15)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder (9)
 PYTHONPATH=. pytest tests/test_adapter.py -v     # graph adapter (4)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
 PYTHONPATH=. pytest tests/test_ingestion.py -v   # ingestion (8)
 PYTHONPATH=. pytest tests/test_benchmark.py -v   # metrics + benchmark (16)
-PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (14)
+PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (15)
+PYTHONPATH=. pytest tests/test_api.py -v          # API (6)
 PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (13)
 ```
 
@@ -446,7 +466,7 @@ npm run dev
 * [x] `resolved_deps` / `external_deps` with suffix path matching
 * [x] `parse_repository()` — walk repo, parse all files
 * [x] CLI: `python -m app.parser.cli <file-or-repo>`
-* [x] Unit tests (`tests/test_parser.py`, 11 cases) + `tests/fixtures/mini_repo`
+* [x] Unit tests (`tests/test_parser.py`, 15 cases) + `tests/fixtures/mini_repo`
 * [x] `CycleDetector` + tests (`tests/algorithms/test_cycles.py`, 8 cases)
 * [x] `GraphBuilder` + `GraphResult` — nodes and directed import edges
 * [x] `GraphAdapter` — canonical `GraphResult` → `nx.DiGraph` conversion
@@ -456,4 +476,5 @@ npm run dev
 * [x] `AlgorithmEngine` — PageRank, betweenness, criticality (`test_scoring.py`, 13 cases)
 * [x] JSON export — `serialize.py`, `--json PATH` (`test_serialize.py`)
 * [x] `IngestionService` (zip upload, temp extract, cleanup)
+* [x] `POST /api/analyze` — sync zip upload → pipeline → cleanup (`tests/test_api.py`)
 * [x] Pipeline stage metrics and benchmark CLI

@@ -67,14 +67,25 @@ def test_statistics_are_parser_level() -> None:
     assert set(stats.keys()) == {
         "class_count",
         "function_count",
-        "total_internal_dependencies",
-        "total_external_dependencies",
+        "internal_dependency_count",
+        "external_dependency_count",
     }
     assert stats["class_count"] >= 1  # User, Helper in mini_repo
     assert stats["function_count"] >= 1
     # Repo-wide sums of resolved_deps / external_deps list lengths.
-    assert stats["total_internal_dependencies"] >= data["summary"]["edge_count"]
-    assert stats["total_external_dependencies"] >= 1
+    assert stats["internal_dependency_count"] >= data["summary"]["edge_count"]
+    assert stats["external_dependency_count"] >= 1
+
+
+def test_repository_metadata_when_provided() -> None:
+    result = AnalysisPipeline().run(FIXTURE_ROOT)
+    data = result.to_dict(
+        generated_at=FIXED_AT,
+        repository={"name": "mini_repo", "source": "local"},
+    )
+
+    assert list(data.keys())[:3] == ["metadata", "repository", "summary"]
+    assert data["repository"] == {"name": "mini_repo", "source": "local"}
 
 
 def test_graph_nodes_are_path_strings() -> None:
@@ -140,6 +151,18 @@ def test_analysis_groups_cycles_and_scores() -> None:
     }
     criticalities = [s["criticality"] for s in analysis["scores"]]
     assert criticalities == sorted(criticalities, reverse=True)
+    assert analysis["scores"][0]["pagerank"] == 0.4524
+    assert analysis["scores"][0]["betweenness"] == 0.0
+    assert analysis["scores"][0]["criticality"] == 0.6
+
+
+def test_score_floats_rounded_to_four_decimal_places() -> None:
+    result = AnalysisPipeline().run(FIXTURE_ROOT)
+    score = _dict(result)["analysis"]["scores"][0]
+    for field in ("pagerank", "betweenness", "criticality"):
+        text = str(score[field])
+        if "." in text:
+            assert len(text.split(".")[1]) <= 4
 
 
 def test_top_n_is_slice_of_scores() -> None:
@@ -178,7 +201,8 @@ def test_files_keep_full_file_analysis() -> None:
     assert "myapp/models.py" in auth["resolved_deps"]
     assert "os" in auth["external_deps"]
     assert isinstance(auth["imports"], list)
-    assert auth["imports"][0]["display"]
+    assert auth["imports"][0]["display"] == "import os"
+    assert auth["imports"][1]["display"] == "import requests"
     assert "classes" in auth
     assert "functions" in auth
     assert "methods" in auth

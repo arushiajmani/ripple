@@ -112,7 +112,7 @@ ripple/
 │       ├── test_graph.py        # GraphBuilder (9)
 │       ├── test_adapter.py      # GraphAdapter (4)
 │       ├── test_pipeline.py     # AnalysisPipeline (9)
-│       ├── test_api.py          # stub
+│       ├── test_api.py          # POST /api/analyze (6)
 │       ├── algorithms/
 │       │   ├── test_cycles.py   # CycleDetector (8)
 │       │   └── test_scoring.py  # AlgorithmEngine (13)
@@ -160,17 +160,18 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 
 | Layer | Test file | Count | Isolates |
 |-------|-----------|-------|----------|
-| Parser | `tests/test_parser.py` | 11 | `ASTParser`, `parse_repository` — no graph |
+| Parser | `tests/test_parser.py` | 15 | `ASTParser`, `parse_repository` — no graph |
 | Graph | `tests/test_graph.py` | 9 | `GraphBuilder` — synthetic `FileAnalysis`, no parser |
 | Adapter | `tests/test_adapter.py` | 4 | `GraphAdapter` — `GraphResult` → `nx.DiGraph` |
 | Pipeline | `tests/test_pipeline.py` | 9 | `AnalysisPipeline` — parse → graph → adapter → algorithms |
 | Benchmark | `tests/test_benchmark.py` | 16 | Stage metrics, grouped CLI table, `metrics_iterator`, edge cases |
 | Ingestion | `tests/test_ingestion.py` | 8 | Zip extract, zip-slip, cleanup, pipeline |
-| Serialize | `tests/test_serialize.py` | 14 | JSON (metadata, summary, statistics, graph, …) |
+| API | `tests/test_api.py` | 6 | `POST /api/analyze` — upload, errors, cleanup |
+| Serialize | `tests/test_serialize.py` | 16 | JSON (metadata, repository, statistics, graph, …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `nx.DiGraph` only |
 | Scoring | `tests/algorithms/test_scoring.py` | 13 | `AlgorithmEngine` — PageRank, betweenness, criticality, warm-up |
 
-**92 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
+**104 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
 
 - **CLI commands (all tools + tests):** [§12 CLI Reference](#12-cli-reference)
 - **Quick commands:** [README — Tests](../README.md#tests)
@@ -539,21 +540,46 @@ CREATE INDEX idx_scores_criticality ON node_scores(criticality_score DESC);
 ## 6. API Contract
 
 ### POST /api/analyze
-Accepts a zip file upload. Creates an analysis job.
+
+Accepts a zip file upload and runs analysis synchronously (partial implementation — no DB or background jobs yet).
 
 ```
 Request:  multipart/form-data
           file: <zip file>
 
-Response 202 Accepted:
+Response 200 OK:
 {
-  "repo_id": "uuid",
-  "status": "processing"
+  "job_id": "uuid",
+  "status": "complete",
+  "metadata": { "generated_at": "..." },
+  "repository": { "name": "mini_repo", "source": "zip" },
+  "summary": { ... },
+  "statistics": { ... },
+  "graph": { "nodes": [...], "edges": [...] },
+  "analysis": { "cycles": {...}, "scores": [...] },
+  "files": { ... }
 }
 
 Response 400 Bad Request:
 {
-  "error": "No Python files found in uploaded archive"
+  "detail": "No Python files found in uploaded archive"
+}
+```
+
+**Manual test (repo root, server in `backend/`):**
+
+```bash
+curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -m json.tool
+```
+
+**Future (Phase 2):** Return `202 Accepted` with `repo_id` + `status: "processing"`, persist to PostgreSQL, poll `GET /api/status/{repo_id}`.
+
+```
+Response 202 Accepted (planned):
+{
+  "repo_id": "uuid",
+  "status": "processing"
 }
 ```
 

@@ -129,6 +129,7 @@ def main(argv: list[str] | None = None) -> None:
         out = result.write_json(
             args.json,
             include_files=not args.no_files,
+            repository={"name": repo_path.name, "source": "local"},
         )
         _section("JSON export")
         print(f"  wrote  {out}")

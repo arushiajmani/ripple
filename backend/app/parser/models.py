@@ -15,6 +15,24 @@ SKIP_DIRS = frozenset({
 })
 
 
+def format_import_display(
+    *,
+    import_type: str,
+    module: str,
+    alias: str | None = None,
+    name: str | None = None,
+) -> str:
+    """Human-readable import statement (e.g. ``import os``, ``from x import y``)."""
+    if import_type == "import":
+        if alias:
+            return f"import {module} as {alias}"
+        return f"import {module}"
+    symbol = name or "*"
+    if alias:
+        symbol = f"{symbol} as {alias}"
+    return f"from {module} import {symbol}"
+
+
 @dataclass
 class ImportInfo:
     module: str
@@ -24,14 +42,12 @@ class ImportInfo:
 
     @property
     def display(self) -> str:
-        if self.type == "import":
-            if self.alias:
-                return f"import {self.module} as {self.alias}"
-            return f"import {self.module}"
-        symbol = self.name or "*"
-        if self.alias:
-            symbol = f"{symbol} as {self.alias}"
-        return f"from {self.module} import {symbol}"
+        return format_import_display(
+            import_type=self.type,
+            module=self.module,
+            alias=self.alias,
+            name=self.name,
+        )
 
 
 @dataclass
