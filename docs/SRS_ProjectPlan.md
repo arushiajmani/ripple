@@ -653,17 +653,17 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 
 ### Verification (how to test requirements)
 
-Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**92 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests) · Full CLI reference: [Architecture §12](./Architecture.md#12-cli-reference).
+Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**104 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests) · Full CLI reference: [Architecture §12](./Architecture.md#12-cli-reference).
 
 
 | Requirement                            | Status          | Verified by                                                                     |
 | -------------------------------------- | --------------- | ------------------------------------------------------------------------------- |
 | FR-02 Index `.py` files                | Partial         | `test_collect_python_files_skips_cache_dirs`, `test_parse_repository_mini_repo` |
-| FR-03 Parse imports + dependency graph | Partial         | `test_parser.py` (11), `test_graph.py` (9), `test_pipeline.py` (9)              |
-| FR-04 PageRank                         | Partial         | `test_scoring.py` (13) + pipeline; API/UI pending — [learn.md](./learn.md#phase-1-week-2--criticality-scoring) |
+| FR-03 Parse imports + dependency graph | Partial         | `test_parser.py` (15), `test_graph.py` (9), `test_pipeline.py` (9)              |
+| FR-04 PageRank                         | Partial         | `test_scoring.py` (13) + pipeline; graph/status API pending — [learn.md](./learn.md#phase-1-week-2--criticality-scoring) |
 | FR-05 Betweenness                      | Partial         | same as FR-04                                                                   |
-| FR-06 Circular dependencies            | Partial         | `test_cycles.py` (8) + `test_pipeline.py`; API/UI pending — [learn.md](./learn.md#phase-1-week-2--cycle-detection) |
-| FR-07 REST API                         | Not implemented | `test_api.py` stub                                                              |
+| FR-06 Circular dependencies            | Partial         | `test_cycles.py` (8) + `test_pipeline.py`; graph/status API pending — [learn.md](./learn.md#phase-1-week-2--cycle-detection) |
+| FR-07 REST API                         | Partial         | Sync `POST /api/analyze` (zip) — `tests/test_api.py` (6); async/DB endpoints pending |
 | FR-13 Pipeline metrics                 | Partial         | `PipelineResult.metrics`; status API pending                                    |
 | FR-14 Benchmark CLI                    | Implemented     | `python -m app.benchmark --repo` (`tests/test_benchmark.py`)                    |
 
@@ -686,7 +686,7 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**92 tes
 - [x] Set up project structure and Git repo
 - [x] Implement `ASTParser` — parse a single `.py` file and extract imports
 - [x] Handle absolute imports (`import os`), from-imports (`from os import path`), and aliased imports (`import numpy as np`)
-- [x] Write unit tests for the parser against 10+ edge case files — `tests/test_parser.py` (11 parametrized + integration cases)
+- [x] Write unit tests for the parser against 10+ edge case files — `tests/test_parser.py` (15 parametrized + integration cases)
 - [x] Milestone: `python -m app.parser.cli path/to/file.py` prints all imports correctly
 
 **Week 2: Graph Builder + Algorithms**
@@ -701,14 +701,18 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**92 tes
 
 **Week 3: Ingestion + Integration**
 
+- [x] Implement `IngestionService` — zip upload to temp directory (`/tmp/ripple/{job_id}/`)
 - [ ] Implement `IngestionService` — clone a GitHub repo to temp directory
-- [x] Walk repo and parse all `.py` files — `parse_repository()` (directory path, not zip)
+- [x] Walk repo and parse all `.py` files — `parse_repository()` / zip extract via `ingest_zip` / `ingest_zip_bytes`
 - [x] Wire parse → graph → cycles → scores in `AnalysisPipeline`
+- [x] Wire `IngestionService` → `AnalysisPipeline` in API layer — sync `POST /api/analyze` (`ingest_zip_bytes` → `run` → `cleanup`)
+- [x] Clean up temp directory after analysis (`IngestionService.cleanup`)
 - [x] Wire full pipeline with pipeline stage instrumentation (`PipelineResult.metrics`)
 - [x] Add benchmark CLI: `python -m app.benchmark --repo path/to/project`
-- [x] Output results as JSON file — `PipelineResult.write_json()` / `--json PATH`
+- [x] Output results as JSON file — `PipelineResult.write_json()` / `--json PATH` (includes `repository` metadata; scores rounded to 4 dp)
 - [ ] Test against 3 different real Python repos
 - [x] Milestone: CLI produces `result.json` with nodes, edges, scores, and cycles (`--json`)
+- [x] Milestone: `curl -X POST /api/analyze -F file=@…zip` returns full analysis JSON (see [README](../README.md#api-zip-upload))
 
 *At the end of Phase 1, the hard work is done. Everything after this is presentation.*
 
@@ -721,19 +725,19 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**92 tes
 **Week 4: FastAPI Setup + Database**
 
 - [x] Set up FastAPI project, Docker Compose (FastAPI + PostgreSQL) — health endpoint only
-
-- Implement PostgreSQL schema (migrations via Alembic)
-- Implement `POST /api/analyze` — accepts URL, starts background job, returns repo_id
-- Implement `GET /api/status/{repo_id}` — returns job status and `metrics[]` when complete
-- Milestone: Can submit a URL via curl and poll for completion with stage timings
+- [x] Implement `POST /api/analyze` (partial) — sync zip upload, returns full analysis JSON (`tests/test_api.py`)
+- [ ] Implement PostgreSQL schema (migrations via Alembic)
+- [ ] Implement `POST /api/analyze` (full) — async 202, job record in DB, background analysis
+- [ ] Implement `GET /api/status/{repo_id}` — returns job status and `metrics[]` when complete
+- [ ] Milestone: Can submit a zip via curl, poll status until complete, stage timings in status response
 
 **Week 5: Graph + Impact Endpoints**
 
-- Implement `GET /api/graph/{repo_id}` — returns full graph JSON
-- Implement `GET /api/impact/{repo_id}?file=...` — returns impact analysis
-- Implement `GET /api/repos` — returns history
-- Test all endpoints via FastAPI's auto-generated `/docs` UI
-- Milestone: Full API functional, tested manually via Swagger UI
+- [ ] Implement `GET /api/graph/{repo_id}` — returns full graph JSON
+- [ ] Implement `GET /api/impact/{repo_id}?file=...` — returns impact analysis
+- [ ] Implement `GET /api/repos` — returns history
+- [ ] Test all endpoints via FastAPI's auto-generated `/docs` UI
+- [ ] Milestone: Full API functional, tested manually via Swagger UI
 
 ---
 
