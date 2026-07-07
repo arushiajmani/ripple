@@ -7,6 +7,34 @@
 
 ---
 
+## Table of Contents
+
+### Getting oriented
+
+- [Big picture](#big-picture)
+- [Design Decisions](#design-decisions)
+- [Future Scope](#future-scope)
+- [Design choices & things we rectified (parser iteration)](#design-choices--things-we-rectified-parser-iteration)
+
+### Shipped components (read in order)
+
+- [Phase 0 — Project setup](#phase-0--project-setup-complete)
+- [Phase 1, Week 1 — AST Parser](#phase-1-week-1--ast-parser)
+- [Phase 1, Week 2 — Graph Builder](#phase-1-week-2--graph-builder)
+- [Phase 1, Week 2 — Cycle Detection](#phase-1-week-2--cycle-detection)
+- [Phase 1, Week 2 — Criticality Scoring](#phase-1-week-2--criticality-scoring)
+- [Phase 1 — Zip ingestion](#phase-1--zip-ingestion)
+- [Phase 1 — Benchmark CLI](#phase-1--benchmark-cli)
+- [Phase 1 — Analysis Pipeline](#phase-1--analysis-pipeline)
+
+### Testing & commands
+
+- [Introduction to pytest](#introduction-to-pytest)
+- [Testing overview](#testing-overview)
+- [Command sheet (all inputs)](Architecture.md#command-sheet-all-inputs) — parser, pipeline, benchmark, zip, pytest
+
+---
+
 ### Checklist (AST parser)
 
 | Task | Done? |
@@ -713,11 +741,12 @@ print(ast.dump(tree, indent=2))
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 77 tests
+PYTHONPATH=. pytest tests/ -v                    # all 83 tests
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser only (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder only (9)
+PYTHONPATH=. pytest tests/test_adapter.py -v     # graph adapter only (4)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline only (9)
-PYTHONPATH=. pytest tests/algorithms/ -v         # cycle detection only (8)
+PYTHONPATH=. pytest tests/algorithms/ -v         # cycle detection + scoring (21)
 ```
 
 If you `cd tests/` first, use `PYTHONPATH=.. pytest . -v` — not `pytest tests/`.
@@ -762,9 +791,9 @@ See [Testing overview](#testing-overview) for what each suite covers. For where 
 backend/app/graph/
 ├── models.py              # GraphResult, CircularDependencyResult
 ├── builder.py             # GraphBuilder
+├── adapter.py             # GraphAdapter — GraphResult → nx.DiGraph
 └── algorithms/
-    ├── base.py            # GraphAlgorithm protocol
-    ├── digraph.py         # GraphResult → nx.DiGraph
+    ├── base.py            # GraphAlgorithm protocol (run(digraph) → T)
     ├── cycles.py          # CycleDetector (shipped)
     └── scoring.py         # AlgorithmEngine (shipped)
 ```
@@ -778,7 +807,7 @@ class GraphResult:
     edges: list[tuple[str, str]]      # (importer, imported)
 ```
 
-This is the **structural** graph only. `CycleDetector` and `AlgorithmEngine` read it for cycles and criticality scores.
+This is the **structural** graph only (Ripple domain model). `GraphAdapter` converts it to `nx.DiGraph` for algorithms; `PipelineResult` still exposes `graph` as `GraphResult` for JSON and reporting.
 
 ### 2. Input and API
 
@@ -843,7 +872,7 @@ for dep in analysis.resolved_deps:
 
 **Syntax-error files still participate.** A file with `has_syntax_error=True` is still a node if it's in the dict. Any `resolved_deps` the parser extracted before failing still become edges.
 
-**`GraphResult` stays plain lists.** NetworkX is used only when an algorithm needs it (`graph_result_to_digraph` in `CycleDetector`). That avoids storing the graph twice until needed.
+**`GraphResult` stays plain lists.** NetworkX is created once per pipeline run via `GraphAdapter`; algorithms share a single `DiGraph`. That keeps Ripple's domain model separate from the graph library.
 
 ### 6. End-to-end flow (parser → graph)
 
@@ -883,23 +912,24 @@ for source, target in result.edges:
 
 ## Phase 1, Week 2 — Cycle Detection
 
-**Goal:** Given a file import graph (`GraphResult`), find every circular dependency and report each loop once in a stable form.
+**Goal:** Given a file import graph (`nx.DiGraph`), find every circular dependency and report each loop once in a stable form.
 
 **Files to read in order:**
 
 1. `backend/app/graph/models.py` — `CircularDependencyResult`
-2. `backend/app/graph/algorithms/digraph.py` — `graph_result_to_digraph`
+2. `backend/app/graph/adapter.py` — `GraphAdapter` (used by pipeline; algorithms receive `DiGraph` directly)
 3. `backend/app/graph/algorithms/cycles.py` — `normalize_cycle`, `CycleDetector`
 4. `backend/tests/algorithms/test_cycles.py` — 8 unit tests
 
 ```text
-backend/app/graph/algorithms/
-├── base.py       # GraphAlgorithm protocol (run(graph) → T)
-├── digraph.py    # GraphResult → nx.DiGraph
-└── cycles.py     # CycleDetector
+backend/app/graph/
+├── adapter.py    # GraphResult → nx.DiGraph (pipeline only)
+└── algorithms/
+    ├── base.py   # GraphAlgorithm protocol (run(digraph) → T)
+    └── cycles.py # CycleDetector
 ```
 
-**Status:** Implemented, unit-tested, and wired into `AnalysisPipeline` (`PipelineResult.cycles`). You can also call `CycleDetector().detect(graph)` directly.
+**Status:** Implemented, unit-tested, and wired into `AnalysisPipeline` (`PipelineResult.cycles`). You can also call `CycleDetector().detect(digraph)` directly.
 
 ### 1. Output type (`CircularDependencyResult`)
 
@@ -920,19 +950,20 @@ Example: `[["myapp/a.py", "myapp/b.py", "myapp/c.py"]]` means A imports B, B imp
 ### 2. API
 
 ```python
-from app.graph import CycleDetector, GraphBuilder
+from app.graph import CycleDetector, GraphAdapter, GraphBuilder
 from app.parser.repository import parse_repository
 
 analyses = parse_repository("tests/fixtures/mini_repo")
 graph = GraphBuilder().build(analyses)
-result = CycleDetector().detect(graph)   # or .run(graph) — same method
+digraph = GraphAdapter().to_digraph(graph)
+result = CycleDetector().detect(digraph)   # or .run(digraph) — same method
 
 # result.cycles, result.has_cycles, result.cycle_count
 ```
 
 | Input | Type | Notes |
 |-------|------|-------|
-| `graph` | `GraphResult` | Nodes + directed edges only — no parser, no filesystem |
+| `digraph` | `nx.DiGraph` | Directed import graph — no parser, no filesystem |
 
 `detect` is an alias of `run` (`detect = run` on the class).
 
@@ -942,7 +973,10 @@ result = CycleDetector().detect(graph)   # or .run(graph) — same method
 GraphResult { nodes, edges }
         │
         ▼
-graph_result_to_digraph()     # plain lists → nx.DiGraph
+GraphAdapter.to_digraph()     # once per pipeline run
+        │
+        ▼
+nx.DiGraph  ──►  CycleDetector / AlgorithmEngine
         │
         ▼
 nx.simple_cycles(digraph)     # every simple cycle (may include rotations)
@@ -983,17 +1017,17 @@ Without this, the UI and tests would see the same circular dependency multiple t
 
 ### 5. Design choices
 
-**Operates on `GraphResult` only.** No re-parsing. Graph builder preserves cycles as edges; this layer *labels* them.
+**Operates on `nx.DiGraph` only.** No `GraphResult`, no re-parsing. The pipeline builds the DiGraph once via `GraphAdapter` and passes it to all algorithms.
 
 **Self-loops count.** A file that imports itself (`auth.py` → `auth.py`) is a one-node cycle.
 
 **Deterministic order.** Cycles are sorted by length, then by path list, so output is stable across runs.
 
-**In the pipeline.** `AnalysisPipeline.run()` calls `CycleDetector` after `GraphBuilder` and sets `PipelineResult.cycles`. The pipeline CLI prints circular dependencies; JSON export includes `cycles` via `result.write_json()` / `--json`.
+**In the pipeline.** `AnalysisPipeline.run()` builds `GraphResult`, converts via `GraphAdapter`, runs `CycleDetector` on the shared `DiGraph`, and sets `PipelineResult.cycles`.
 
 ### 6. Test cases (`test_cycles.py`)
 
-**8 unit tests** — synthetic graphs only (no parser, no disk). Most use the `build_graph` fixture (`GraphBuilder` + `make_file`); normalization tests build `GraphResult` by hand.
+**8 unit tests** — synthetic `nx.DiGraph` only (no parser, no disk). Most use the `build_digraph` fixture (`GraphBuilder` + `GraphAdapter` + `make_file`); normalization tests build via `GraphAdapter().to_digraph(GraphResult(...))`.
 
 Run from `backend/`:
 
@@ -1003,7 +1037,7 @@ PYTHONPATH=. pytest tests/algorithms/test_cycles.py -v
 
 | Test | What it proves |
 |------|----------------|
-| `test_empty_graph_has_no_cycles` | Empty `GraphResult` → `cycles == []`, `has_cycles` false, `cycle_count == 0` |
+| `test_empty_graph_has_no_cycles` | Empty `DiGraph` → `cycles == []`, `has_cycles` false, `cycle_count == 0` |
 | `test_acyclic_repository_has_no_cycles` | Tree-shaped imports (auth → utils/models) → no cycles |
 | `test_simple_three_node_cycle` | A→B→C→A detected; path starts at lex-smallest node (`a.py`) |
 | `test_self_loop_is_a_cycle` | File importing itself → `[["myapp/auth.py"]]` |
@@ -1019,29 +1053,33 @@ Also listed under [Testing overview — Cycle detection tests](#cycle-detection-
 ### 7. Try it yourself
 
 ```python
-from app.graph import CycleDetector, GraphBuilder, GraphResult
+from app.graph import CycleDetector, GraphAdapter, GraphResult
 
 # Hand-built cycle: a → b → c → a
-graph = GraphResult(
-    nodes=["myapp/a.py", "myapp/b.py", "myapp/c.py"],
-    edges=[
-        ("myapp/a.py", "myapp/b.py"),
-        ("myapp/b.py", "myapp/c.py"),
-        ("myapp/c.py", "myapp/a.py"),
-    ],
+digraph = GraphAdapter().to_digraph(
+    GraphResult(
+        nodes=["myapp/a.py", "myapp/b.py", "myapp/c.py"],
+        edges=[
+            ("myapp/a.py", "myapp/b.py"),
+            ("myapp/b.py", "myapp/c.py"),
+            ("myapp/c.py", "myapp/a.py"),
+        ],
+    )
 )
-print(CycleDetector().detect(graph).cycles)
+print(CycleDetector().detect(digraph).cycles)
 # [['myapp/a.py', 'myapp/b.py', 'myapp/c.py']]
 ```
 
 Or on a real project root (see [Analysis root convention](#analysis-root-convention)):
 
 ```python
-from app.graph import CycleDetector, GraphBuilder
+from app.graph import CycleDetector, GraphAdapter, GraphBuilder
 from app.parser.repository import parse_repository
 
-graph = GraphBuilder().build(parse_repository("."))
-print(CycleDetector().detect(graph))
+digraph = GraphAdapter().to_digraph(
+    GraphBuilder().build(parse_repository("."))
+)
+print(CycleDetector().detect(digraph))
 ```
 
 ---
@@ -1054,7 +1092,7 @@ print(CycleDetector().detect(graph))
 
 1. `backend/app/graph/models.py` — `NodeScore`, `ScoringResult`
 2. `backend/app/graph/algorithms/scoring.py` — `normalize_scores`, `AlgorithmEngine`
-3. `backend/tests/algorithms/test_scoring.py` — 12 unit tests
+3. `backend/tests/algorithms/test_scoring.py` — 13 unit tests
 
 **Status:** Implemented, unit-tested, and wired into `AnalysisPipeline` (`PipelineResult.scores`). CLI prints top 10 critical files.
 
@@ -1114,25 +1152,26 @@ criticality = 0.6 * normalize(pagerank) + 0.4 * normalize(betweenness)
 ### 4. Flow
 
 ```
-GraphResult
-    │
-    ▼
-graph_result_to_digraph()
-    │
-    ├── nx.pagerank(alpha=0.85)
-    ├── nx.betweenness_centrality()
-    ├── in_degree / out_degree
-    │
-    ▼
+GraphAdapter.to_digraph(GraphResult)
+        │
+        ▼
+nx.DiGraph  (shared, built once per pipeline run)
+        │
+        ├── untimed nx.pagerank (warm-up — excludes cold-start from metrics)
+        ├── nx.pagerank(alpha=0.85)  [timed]
+        ├── nx.betweenness_centrality()  [timed]
+        ├── in_degree / out_degree
+        │
+        ▼
 normalize each metric → weighted criticality → sort
-    │
-    ▼
+        │
+        ▼
 ScoringResult
 ```
 
 ### 5. Test cases (`test_scoring.py`)
 
-**12 unit tests** — synthetic graphs only.
+**13 unit tests** — synthetic `nx.DiGraph` only.
 
 ```bash
 PYTHONPATH=. pytest tests/algorithms/test_scoring.py -v
@@ -1149,6 +1188,7 @@ PYTHONPATH=. pytest tests/algorithms/test_scoring.py -v
 | `test_scores_sorted_by_criticality_then_path` | Stable ordering |
 | `test_top_returns_first_n` | `ScoringResult.top(n)` |
 | `test_run_matches_score` | `run` / `score` alias |
+| `test_pagerank_warmup_excludes_cold_start_from_metrics` | Untimed warm-up before measured PageRank stage |
 
 ---
 
@@ -1281,12 +1321,14 @@ Stages (same shape as future `GET /api/status` `metrics[]`):
 | `file_discovery` | `collect_python_files` walk |
 | `ast_parsing` | AST walk per file (read + parse + extract) |
 | `import_resolution` | `classify_dependencies` per file |
-| `graph_construction` | `GraphBuilder.build` + `CycleDetector.detect` |
-| `pagerank_computation` | `nx.pagerank` |
+| `graph_construction` | `GraphBuilder.build` + `GraphAdapter` + `CycleDetector.detect` |
+| `pagerank_computation` | `nx.pagerank` (timed; after untimed warm-up) |
 | `betweenness_computation` | `nx.betweenness_centrality` |
 | `score_normalization` | min-max normalize + `NodeScore` assembly |
 
 Timings live on `PipelineResult.metrics` (`list[StageMetric]`). Each metric has `stage_name`, `duration_ms`, and optional `files_processed`.
+
+**Steady-state performance:** one untimed PageRank runs before the timed `pagerank_computation` stage to exclude one-time NetworkX/SciPy backend initialization. The CLI prints a short performance note at the end of the report.
 
 ```python
 from app.pipeline import AnalysisPipeline
@@ -1298,7 +1340,7 @@ for m in result.metrics:
 
 ### Test cases (`test_benchmark.py`)
 
-**6 tests** — metrics presence, `files_processed`, non-negative durations, `to_dict`, table formatting, empty repo.
+**7 tests** — metrics presence, `files_processed`, non-negative durations, `to_dict`, table formatting, performance notes, empty repo.
 
 ```bash
 PYTHONPATH=. pytest tests/test_benchmark.py -v
@@ -1311,6 +1353,7 @@ PYTHONPATH=. pytest tests/test_benchmark.py -v
 | `test_metrics_durations_are_non_negative` | No negative ms |
 | `test_stage_metric_to_dict` | API-ready dict shape |
 | `test_format_metrics_table_includes_stages` | CLI table output |
+| `test_benchmark_performance_notes_constant` | Performance note mentions steady-state / warm-up |
 | `test_empty_repo_has_parse_and_graph_metrics` | Empty dir still records stages |
 
 ---
@@ -1345,13 +1388,13 @@ Flow:
 parse_repository(repo_path)
         │
         ▼
-GraphBuilder().build(analyses)
+GraphBuilder().build(analyses)  →  GraphResult
         │
         ▼
-CycleDetector().detect(graph)
+GraphAdapter().to_digraph(graph)  →  nx.DiGraph  (once per run)
         │
-        ▼
-AlgorithmEngine().score(graph)
+        ├── CycleDetector().detect(digraph)
+        └── AlgorithmEngine().run_with_metrics(digraph)
         │
         ▼
 PipelineResult(analyses, graph, cycles, scores)
@@ -1700,9 +1743,9 @@ That is why `pytest --collect-only` reports **11** tests in `test_parser.py` eve
 
 ## Testing overview
 
-**77 tests** across eight suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+**83 tests** across nine suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
 
-This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
+This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests) or [Architecture — CLI Reference](./Architecture.md#12-cli-reference). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
 
 ### Strategy by layer
 
@@ -1710,23 +1753,25 @@ This section is the **detailed test catalog** — what each file proves and how 
 |-------|------|-------|-------|------------------|
 | Parser | `test_parser.py` | 11 | Unit + integration | `ASTParser` import forms; `parse_repository` walk + resolution |
 | Graph | `test_graph.py` | 9 | Unit | `GraphBuilder` rules via synthetic `FileAnalysis` dicts |
-| Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline`; parse → graph → cycles → scores |
-| Benchmark | `test_benchmark.py` | 6 | Stage metrics, table formatting |
+| Adapter | `test_adapter.py` | 4 | Unit | `GraphAdapter`: `GraphResult` → `nx.DiGraph` |
+| Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline`; parse → graph → adapter → algorithms |
+| Benchmark | `test_benchmark.py` | 7 | Integration | Stage metrics, table formatting, performance notes |
 | Ingestion | `test_ingestion.py` | 8 | Unit | `IngestionService`: zip path/bytes, zip-slip, cleanup |
 | Serialize | `test_serialize.py` | 14 | Unit | JSON (`metadata` / `summary` / `statistics` / `graph` / …) |
-| Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `GraphResult` |
-| Scoring | `tests/algorithms/test_scoring.py` | 12 | Unit | `AlgorithmEngine` on synthetic `GraphResult` |
+| Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `nx.DiGraph` |
+| Scoring | `tests/algorithms/test_scoring.py` | 13 | Unit | `AlgorithmEngine` on synthetic `nx.DiGraph` |
 
 ```
 test_parser.py     →  ASTParser / parse_repository  →  FileAnalysis
 test_graph.py      →  GraphBuilder                  →  GraphResult     (no parser)
-test_pipeline.py   →  AnalysisPipeline              →  PipelineResult  (parse + graph + cycles + scores)
+test_adapter.py    →  GraphAdapter                  →  nx.DiGraph      (no algorithms)
+test_pipeline.py   →  AnalysisPipeline              →  PipelineResult  (full stack)
 test_serialize.py  →  PipelineResult.to_dict/write_json → JSON
 test_cycles.py     →  CycleDetector                 →  CircularDependencyResult
 test_scoring.py    →  AlgorithmEngine               →  ScoringResult
 ```
 
-Parser tests do **not** call `GraphBuilder`. Graph tests do **not** call `parse_repository`. Pipeline tests exercise the full stack except where monkeypatch injects controlled parse output. Cycle and scoring unit tests use `GraphResult` only (no pipeline).
+Parser tests do **not** call `GraphBuilder`. Graph tests do **not** call `parse_repository`. Pipeline tests exercise the full stack except where monkeypatch injects controlled parse output. Cycle and scoring unit tests use `nx.DiGraph` only (via `build_digraph` fixture or `GraphAdapter`).
 
 ### Parser tests (`test_parser.py`) — full list
 
@@ -1775,7 +1820,7 @@ Uses `make_file()` helper for realistic `FileAnalysis` fixtures without touching
 | `test_detect_deduplicates_rotations` | Same cycle not reported twice |
 | `test_run_matches_detect` | `run()` alias equals `detect()` |
 
-Synthetic `GraphResult` only — no parser, no filesystem, no pipeline.
+Synthetic `nx.DiGraph` only — no parser, no filesystem, no pipeline.
 
 ### Scoring tests (`test_scoring.py`) — full list
 
@@ -1795,6 +1840,7 @@ Synthetic `GraphResult` only — no parser, no filesystem, no pipeline.
 | `test_top_returns_first_n` | `top(n)` slice |
 | `test_run_matches_score` | Alias equality |
 | `test_node_score_fields_present` | All `NodeScore` fields set |
+| `test_pagerank_warmup_excludes_cold_start_from_metrics` | Warm-up before timed PageRank |
 
 Run algorithm tests: `PYTHONPATH=. pytest tests/algorithms/ -v`
 

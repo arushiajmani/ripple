@@ -1,8 +1,8 @@
+from app.graph.adapter import GraphAdapter, graph_result_to_digraph
 from app.graph.algorithms import (
     AlgorithmEngine,
     CycleDetector,
     GraphAlgorithm,
-    graph_result_to_digraph,
 )
 from app.graph.builder import GraphBuilder
 from app.graph.models import (
@@ -16,6 +16,7 @@ __all__ = [
     "AlgorithmEngine",
     "CircularDependencyResult",
     "CycleDetector",
+    "GraphAdapter",
     "GraphAlgorithm",
     "GraphBuilder",
     "GraphResult",

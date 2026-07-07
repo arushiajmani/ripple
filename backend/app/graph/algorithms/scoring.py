@@ -31,8 +31,7 @@ import time
 
 import networkx as nx
 
-from app.graph.algorithms.digraph import graph_result_to_digraph
-from app.graph.models import GraphResult, NodeScore, ScoringResult
+from app.graph.models import NodeScore, ScoringResult
 from app.metrics import StageMetric
 
 # How much each metric contributes to criticality (must sum to 1.0).
@@ -74,17 +73,21 @@ class AlgorithmEngine:
         self._pagerank_weight = pagerank_weight
         self._betweenness_weight = betweenness_weight
 
-    def run(self, graph: GraphResult) -> ScoringResult:
-        result, _metrics = self.run_with_metrics(graph)
+    def run(self, digraph: nx.DiGraph) -> ScoringResult:
+        result, _metrics = self.run_with_metrics(digraph)
         return result
 
     def run_with_metrics(
-        self, graph: GraphResult
+        self,
+        digraph: nx.DiGraph,
+        *,
+        warmup_pagerank: bool = True,
     ) -> tuple[ScoringResult, list[StageMetric]]:
-        if not graph.nodes:
+        if digraph.number_of_nodes() == 0:
             return ScoringResult(scores=[]), []
 
-        digraph = graph_result_to_digraph(graph)
+        if warmup_pagerank:
+            nx.pagerank(digraph, alpha=self._pagerank_alpha)
 
         pr_start = time.perf_counter()
         pagerank = nx.pagerank(digraph, alpha=self._pagerank_alpha)
@@ -99,7 +102,7 @@ class AlgorithmEngine:
         norm_bt = normalize_scores(betweenness)
 
         scores: list[NodeScore] = []
-        for node in graph.nodes:
+        for node in digraph.nodes:
             pr = pagerank[node]
             bt = betweenness[node]
             criticality = (

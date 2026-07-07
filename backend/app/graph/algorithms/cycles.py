@@ -1,10 +1,10 @@
 """Circular dependency detection on a file import graph.
 
-CycleDetector takes a GraphResult (nodes + directed edges), finds simple cycles
-via NetworkX, normalizes each cycle so rotations are treated as the same loop,
-and returns CircularDependencyResult.
+CycleDetector takes a NetworkX DiGraph (importer → imported edges), finds simple
+cycles via NetworkX, normalizes each cycle so rotations are treated as the same
+loop, and returns CircularDependencyResult.
 
-Wired into AnalysisPipeline as PipelineResult.cycles; can also call detect(graph) directly.
+Wired into AnalysisPipeline as PipelineResult.cycles; can also call detect(digraph) directly.
 
 Run tests from backend/:
     PYTHONPATH=. pytest tests/algorithms/test_cycles.py -v
@@ -14,8 +14,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from app.graph.algorithms.digraph import graph_result_to_digraph
-from app.graph.models import CircularDependencyResult, GraphResult
+from app.graph.models import CircularDependencyResult
 
 
 def normalize_cycle(cycle: list[str]) -> tuple[str, ...]:
@@ -32,10 +31,9 @@ def normalize_cycle(cycle: list[str]) -> tuple[str, ...]:
 
 
 class CycleDetector:
-    """Find unique circular dependencies in a GraphResult."""
+    """Find unique circular dependencies in a NetworkX DiGraph."""
 
-    def run(self, graph: GraphResult) -> CircularDependencyResult:
-        digraph = graph_result_to_digraph(graph)
+    def run(self, digraph: nx.DiGraph) -> CircularDependencyResult:
         seen: set[tuple[str, ...]] = set()
         cycles: list[list[str]] = []
 

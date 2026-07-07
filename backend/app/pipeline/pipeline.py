@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from app.graph.adapter import GraphAdapter
 from app.graph.algorithms.cycles import CycleDetector
 from app.graph.algorithms.scoring import AlgorithmEngine
 from app.graph.builder import GraphBuilder
@@ -95,15 +96,17 @@ class PipelineResult:
 
 
 class AnalysisPipeline:
-    """Wire parse_repository → GraphBuilder → CycleDetector → AlgorithmEngine."""
+    """Wire parse_repository → GraphBuilder → GraphAdapter → algorithms."""
 
     def __init__(
         self,
         graph_builder: GraphBuilder | None = None,
+        graph_adapter: GraphAdapter | None = None,
         cycle_detector: CycleDetector | None = None,
         algorithm_engine: AlgorithmEngine | None = None,
     ) -> None:
         self._graph_builder = graph_builder or GraphBuilder()
+        self._graph_adapter = graph_adapter or GraphAdapter()
         self._cycle_detector = cycle_detector or CycleDetector()
         self._algorithm_engine = algorithm_engine or AlgorithmEngine()
 
@@ -114,7 +117,8 @@ class AnalysisPipeline:
 
         with StageTimer() as graph_timer:
             graph = self._graph_builder.build(analyses)
-            cycles = self._cycle_detector.detect(graph)
+            digraph = self._graph_adapter.to_digraph(graph)
+            cycles = self._cycle_detector.detect(digraph)
 
         graph_metrics = [
             StageMetric(
@@ -123,7 +127,7 @@ class AnalysisPipeline:
                 files_processed=file_count,
             )
         ]
-        scores, score_metrics = self._algorithm_engine.run_with_metrics(graph)
+        scores, score_metrics = self._algorithm_engine.run_with_metrics(digraph)
         metrics = [*parse_metrics, *graph_metrics, *score_metrics]
 
         return PipelineResult(

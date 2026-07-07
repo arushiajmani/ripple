@@ -11,6 +11,16 @@ from app.pipeline import AnalysisPipeline
 
 RULE = "─" * 64
 
+PERFORMANCE_NOTES = """\
+Performance Notes
+-----------------
+
+Benchmark measures steady-state algorithm performance.
+
+A single untimed PageRank warm-up is executed to exclude
+one-time NetworkX/SciPy backend initialization from the
+reported timings."""
+
 
 def _section(title: str) -> None:
     print()
@@ -60,6 +70,8 @@ def main(argv: list[str] | None = None) -> None:
         print()
         print(f"  ast_parsing avg per file: {avg_ast:.2f} ms")
 
+    print()
+    print(PERFORMANCE_NOTES)
     print()
 
 

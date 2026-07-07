@@ -1,6 +1,6 @@
 """AlgorithmEngine unit tests.
 
-Synthetic GraphResult graphs only — no parser, no filesystem.
+Synthetic DiGraph graphs only — no parser, no filesystem.
 Pipeline integration of scores is in test_pipeline.py.
 
 Metric meanings (see docs/learn.md#1-what-each-property-means):
@@ -20,7 +20,9 @@ from __future__ import annotations
 
 from typing import Callable
 
-from app.graph import AlgorithmEngine, GraphResult, NodeScore
+import networkx as nx
+
+from app.graph import AlgorithmEngine, GraphAdapter, GraphResult, NodeScore
 from app.graph.algorithms.scoring import (
     BETWEENNESS_WEIGHT,
     PAGERANK_WEIGHT,
@@ -29,6 +31,10 @@ from app.graph.algorithms.scoring import (
 from app.parser.models import FileAnalysis
 
 from tests.algorithms.helpers import make_file
+
+
+def _to_digraph(graph: GraphResult) -> nx.DiGraph:
+    return GraphAdapter().to_digraph(graph)
 
 
 # --- normalize_scores ---
@@ -53,16 +59,17 @@ def test_normalize_scores_all_equal_are_zero() -> None:
 # --- Empty / trivial graphs ---
 
 def test_empty_graph_has_no_scores() -> None:
-    result = AlgorithmEngine().score(GraphResult(nodes=[], edges=[]))
+    result = AlgorithmEngine().score(nx.DiGraph())
 
     assert result.scores == []
     assert result.top() == []
 
 
 def test_single_node_has_scores_and_zero_degrees() -> None:
-    result = AlgorithmEngine().score(
-        GraphResult(nodes=["solo.py"], edges=[]),
-    )
+    digraph = nx.DiGraph()
+    digraph.add_node("solo.py")
+
+    result = AlgorithmEngine().score(digraph)
 
     assert len(result.scores) == 1
     node = result.scores[0]
@@ -77,10 +84,10 @@ def test_single_node_has_scores_and_zero_degrees() -> None:
 # --- Ranking on a fan-in graph (shared dependency) ---
 
 def test_shared_dependency_ranks_higher_than_leaves(
-    build_graph: Callable[[dict[str, FileAnalysis]], GraphResult],
+    build_digraph: Callable[[dict[str, FileAnalysis]], nx.DiGraph],
 ) -> None:
     """Leaves import hub → PageRank flows to hub; hub should top criticality."""
-    graph = build_graph(
+    digraph = build_digraph(
         {
             "hub.py": make_file("hub.py"),
             "a.py": make_file("a.py", resolved_deps=["hub.py"]),
@@ -89,7 +96,7 @@ def test_shared_dependency_ranks_higher_than_leaves(
         }
     )
 
-    result = AlgorithmEngine().score(graph)
+    result = AlgorithmEngine().score(digraph)
     by_path = {s.file_path: s for s in result.scores}
 
     assert result.scores[0].file_path == "hub.py"
@@ -100,10 +107,10 @@ def test_shared_dependency_ranks_higher_than_leaves(
 
 
 def test_bridge_node_has_high_betweenness(
-    build_graph: Callable[[dict[str, FileAnalysis]], GraphResult],
+    build_digraph: Callable[[dict[str, FileAnalysis]], nx.DiGraph],
 ) -> None:
     """A → bridge → B: bridge lies on the only path between A and B."""
-    graph = build_graph(
+    digraph = build_digraph(
         {
             "a.py": make_file("a.py", resolved_deps=["bridge.py"]),
             "bridge.py": make_file("bridge.py", resolved_deps=["b.py"]),
@@ -111,7 +118,7 @@ def test_bridge_node_has_high_betweenness(
         }
     )
 
-    result = AlgorithmEngine().score(graph)
+    result = AlgorithmEngine().score(digraph)
     by_path = {s.file_path: s for s in result.scores}
 
     assert by_path["bridge.py"].betweenness > by_path["a.py"].betweenness
@@ -120,12 +127,14 @@ def test_bridge_node_has_high_betweenness(
 
 def test_criticality_uses_weighted_normalized_metrics() -> None:
     """criticality == 0.6 * norm(pr) + 0.4 * norm(bt) for each node."""
-    graph = GraphResult(
-        nodes=["hub.py", "a.py", "b.py"],
-        edges=[("a.py", "hub.py"), ("b.py", "hub.py")],
+    digraph = _to_digraph(
+        GraphResult(
+            nodes=["hub.py", "a.py", "b.py"],
+            edges=[("a.py", "hub.py"), ("b.py", "hub.py")],
+        )
     )
 
-    result = AlgorithmEngine().score(graph)
+    result = AlgorithmEngine().score(digraph)
     pagerank = {s.file_path: s.pagerank for s in result.scores}
     betweenness = {s.file_path: s.betweenness for s in result.scores}
     norm_pr = normalize_scores(pagerank)
@@ -140,9 +149,9 @@ def test_criticality_uses_weighted_normalized_metrics() -> None:
 
 
 def test_scores_sorted_by_criticality_then_path(
-    build_graph: Callable[[dict[str, FileAnalysis]], GraphResult],
+    build_digraph: Callable[[dict[str, FileAnalysis]], nx.DiGraph],
 ) -> None:
-    graph = build_graph(
+    digraph = build_digraph(
         {
             "hub.py": make_file("hub.py"),
             "z.py": make_file("z.py", resolved_deps=["hub.py"]),
@@ -150,7 +159,7 @@ def test_scores_sorted_by_criticality_then_path(
         }
     )
 
-    result = AlgorithmEngine().score(graph)
+    result = AlgorithmEngine().score(digraph)
     criticalities = [s.criticality for s in result.scores]
 
     assert criticalities == sorted(criticalities, reverse=True)
@@ -160,9 +169,9 @@ def test_scores_sorted_by_criticality_then_path(
 
 
 def test_top_returns_first_n(
-    build_graph: Callable[[dict[str, FileAnalysis]], GraphResult],
+    build_digraph: Callable[[dict[str, FileAnalysis]], nx.DiGraph],
 ) -> None:
-    graph = build_graph(
+    digraph = build_digraph(
         {
             "hub.py": make_file("hub.py"),
             "a.py": make_file("a.py", resolved_deps=["hub.py"]),
@@ -170,7 +179,7 @@ def test_top_returns_first_n(
         }
     )
 
-    result = AlgorithmEngine().score(graph)
+    result = AlgorithmEngine().score(digraph)
 
     assert len(result.top(2)) == 2
     assert result.top(2)[0].file_path == "hub.py"
@@ -179,26 +188,28 @@ def test_top_returns_first_n(
 
 def test_run_matches_score() -> None:
     """run() and score() are the same method (alias)."""
-    graph = GraphResult(
-        nodes=["a.py", "b.py"],
-        edges=[("a.py", "b.py")],
+    digraph = _to_digraph(
+        GraphResult(
+            nodes=["a.py", "b.py"],
+            edges=[("a.py", "b.py")],
+        )
     )
     engine = AlgorithmEngine()
 
-    assert engine.run(graph) == engine.score(graph)
+    assert engine.run(digraph) == engine.score(digraph)
 
 
 def test_node_score_fields_present(
-    build_graph: Callable[[dict[str, FileAnalysis]], GraphResult],
+    build_digraph: Callable[[dict[str, FileAnalysis]], nx.DiGraph],
 ) -> None:
-    graph = build_graph(
+    digraph = build_digraph(
         {
             "a.py": make_file("a.py", resolved_deps=["b.py"]),
             "b.py": make_file("b.py"),
         }
     )
 
-    node = AlgorithmEngine().score(graph).scores[0]
+    node = AlgorithmEngine().score(digraph).scores[0]
     assert isinstance(node, NodeScore)
     assert node.file_path
     assert node.pagerank >= 0.0
@@ -206,3 +217,22 @@ def test_node_score_fields_present(
     assert node.criticality >= 0.0
     assert node.in_degree >= 0
     assert node.out_degree >= 0
+
+
+def test_pagerank_warmup_excludes_cold_start_from_metrics() -> None:
+    """Untimed warm-up runs before the measured PageRank stage."""
+    digraph = _to_digraph(
+        GraphResult(
+            nodes=["a.py", "b.py"],
+            edges=[("a.py", "b.py")],
+        )
+    )
+    engine = AlgorithmEngine()
+
+    _, metrics_with_warmup = engine.run_with_metrics(digraph, warmup_pagerank=True)
+    _, metrics_without_warmup = engine.run_with_metrics(digraph, warmup_pagerank=False)
+
+    assert len(metrics_with_warmup) == 3
+    assert metrics_with_warmup[0].stage_name == "pagerank_computation"
+    assert metrics_with_warmup[0].duration_ms >= 0.0
+    assert metrics_without_warmup[0].stage_name == "pagerank_computation"

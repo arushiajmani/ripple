@@ -18,6 +18,7 @@
 9. [Infrastructure](#9-infrastructure)
 10. [What Was Deliberately Left Out](#10-what-was-deliberately-left-out)
 11. [How This Scales](#11-how-this-scales)
+12. [CLI Reference](#12-cli-reference)
 
 ---
 
@@ -82,15 +83,20 @@ ripple/
 │   │   ├── graph/              # Component 3: Graph construction + algorithms
 │   │   │   ├── __init__.py
 │   │   │   ├── builder.py      # GraphBuilder class
-│   │   │   ├── algorithms.py   # AlgorithmEngine class
-│   │   │   └── models.py       # GraphResult dataclass
+│   │   │   ├── adapter.py      # GraphAdapter — GraphResult → nx.DiGraph
+│   │   │   ├── models.py       # GraphResult, ScoringResult, …
+│   │   │   └── algorithms/
+│   │   │       ├── cycles.py   # CycleDetector
+│   │   │       └── scoring.py  # AlgorithmEngine (PageRank, betweenness)
 │   │   │
 │   │   ├── pipeline/           # Component 4: Orchestration
 │   │   │   ├── __init__.py
-│   │   │   ├── pipeline.py     # AnalysisPipeline (parse → graph → cycles → scores)
-│   │   │   └── serialize.py    # JSON export (metadata/summary/statistics/graph/…)
+│   │   │   ├── pipeline.py     # AnalysisPipeline (parse → graph → adapter → algorithms)
+│   │   │   ├── serialize.py  # JSON export (metadata/summary/statistics/graph/…)
+│   │   │   └── __main__.py   # python -m app.pipeline <repo> [--json PATH]
 │   │   ├── benchmark/
-│   │   │   └── __main__.py   # python -m app.benchmark --repo <path>
+│   │   │   └── __main__.py     # python -m app.benchmark --repo <path>
+│   │   ├── metrics.py          # StageMetric, StageTimer, format_metrics_table
 │   │   │
 │   │   ├── api/                # Component 5: HTTP layer
 │   │   │   ├── __init__.py
@@ -104,11 +110,12 @@ ripple/
 │   └── tests/
 │       ├── test_parser.py       # ASTParser + parse_repository (11)
 │       ├── test_graph.py        # GraphBuilder (9)
+│       ├── test_adapter.py      # GraphAdapter (4)
 │       ├── test_pipeline.py     # AnalysisPipeline (9)
 │       ├── test_api.py          # stub
 │       ├── algorithms/
 │       │   ├── test_cycles.py   # CycleDetector (8)
-│       │   └── test_scoring.py  # AlgorithmEngine (12)
+│       │   └── test_scoring.py  # AlgorithmEngine (13)
 │       └── fixtures/
 │           └── mini_repo/       # cyclic fixture (models ↔ utils)
 │
@@ -155,18 +162,21 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 |-------|-----------|-------|----------|
 | Parser | `tests/test_parser.py` | 11 | `ASTParser`, `parse_repository` — no graph |
 | Graph | `tests/test_graph.py` | 9 | `GraphBuilder` — synthetic `FileAnalysis`, no parser |
-| Pipeline | `tests/test_pipeline.py` | 9 | `AnalysisPipeline` — parse → graph → cycles → scores |
-| Benchmark | `tests/test_benchmark.py` | 6 | Stage metrics, CLI table |
+| Adapter | `tests/test_adapter.py` | 4 | `GraphAdapter` — `GraphResult` → `nx.DiGraph` |
+| Pipeline | `tests/test_pipeline.py` | 9 | `AnalysisPipeline` — parse → graph → adapter → algorithms |
+| Benchmark | `tests/test_benchmark.py` | 7 | Stage metrics, CLI table, performance notes |
 | Ingestion | `tests/test_ingestion.py` | 8 | Zip extract, zip-slip, cleanup, pipeline |
-| Serialize | `tests/test_serialize.py` | 14 | JSON (`metadata` / `summary` / `statistics` / `graph` / …) |
-| Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `GraphResult` only |
-| Scoring | `tests/algorithms/test_scoring.py` | 12 | `AlgorithmEngine` — PageRank, betweenness, criticality |
+| Serialize | `tests/test_serialize.py` | 14 | JSON (metadata, summary, statistics, graph, …) |
+| Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `nx.DiGraph` only |
+| Scoring | `tests/algorithms/test_scoring.py` | 13 | `AlgorithmEngine` — PageRank, betweenness, criticality, warm-up |
 
-**77 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
+**83 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
 
+- **CLI commands (all tools + tests):** [§12 CLI Reference](#12-cli-reference)
 - **Quick commands:** [README — Tests](../README.md#tests)
 - **Full catalog (every test name):** [learn.md — Testing overview](./learn.md#testing-overview)
 - **Milestone gates:** [Roadmap](./Roadmap.md) (Week 1–2 milestone checks)
+
 ---
 
 ## 3. Component Map
@@ -209,16 +219,19 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 │  │                 │  │              │  │                     │  │
 │  │ unzip file      │  │ ast.parse()  │  │ PageRank            │  │
 │  │ find .py files  │  │ walk AST     │  │ Betweenness         │  │
-│  │ clean up temp   │  │ extract deps │  │ Cycle detection     │  │
-│  └─────────────────┘  └──────┬───────┘  │ Criticality score  │  │
-│                              │           └─────────────────────┘  │
-│                     ┌────────▼────────┐                           │
-│                     │  GraphBuilder   │                           │
-│                     │                 │                           │
-│                     │ nx.DiGraph()    │                           │
-│                     │ resolve imports │                           │
-│                     │ add edges       │                           │
-│                     └─────────────────┘                           │
+│  │ clean up temp   │  │ extract deps │  │ Criticality score   │  │
+│  └─────────────────┘  └──────┬───────┘  └──────────▲──────────┘  │
+│                              │                     │              │
+│                     ┌────────▼────────┐  ┌─────────┴───────────┐  │
+│                     │  GraphBuilder   │  │    CycleDetector    │  │
+│                     │                 │  │  (nx.simple_cycles) │  │
+│                     │ GraphResult     │  └─────────▲───────────┘  │
+│                     └────────┬────────┘            │              │
+│                              │           ┌─────────┴───────────┐  │
+│                     ┌────────▼────────┐  │    GraphAdapter     │  │
+│                     │  GraphResult    │  │ GraphResult→DiGraph │  │
+│                     │  (nodes+edges)  │──►  (built once/run)   │  │
+│                     └─────────────────┘  └─────────────────────┘  │
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │                      PostgreSQL                              │  │
@@ -246,7 +259,7 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 **Alternatives considered:**
 
 | Library | Reason Not Chosen |
-|---|---|
+| --- | --- |
 | Tree-sitter | Excellent for multi-language, but requires learning query language + grammar binaries. Overhead not justified for Python-only. |
 | LibCST | Better for code transformation (codemods). Overkill for read-only analysis. |
 | Regex | Fragile. Breaks on multiline imports, aliases, conditional imports. |
@@ -262,7 +275,7 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 **Alternatives considered:**
 
 | Library | Reason Not Chosen |
-|---|---|
+| --- | --- |
 | Neo4j GDS | Graph database, not a computation library. Adds operational overhead for algorithms NetworkX handles in memory. |
 | igraph | Faster for very large graphs (millions of nodes). Our graphs have hundreds to low thousands of nodes. NetworkX is sufficient. |
 | Manual implementation | Implementing PageRank from scratch is a valid learning exercise but not worth the time here — the algorithms are not the novel part of this project. |
@@ -276,7 +289,7 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 **Alternatives considered:**
 
 | Database | Reason Not Chosen |
-|---|---|
+| --- | --- |
 | Neo4j | Would make graph traversal queries elegant (Cypher). But graph computation happens in NetworkX, not in the database. Two graph systems for the same data is redundant. Neo4j adds operational complexity without replacing NetworkX. |
 | MongoDB | Document store. Our data has clear foreign key relationships — relational is the better fit. |
 | SQLite | File-based, no server, breaks under concurrent access. Fine for local prototypes, wrong for a containerized system. |
@@ -294,7 +307,7 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 **Alternatives considered:**
 
 | Framework | Reason Not Chosen |
-|---|---|
+| --- | --- |
 | Django | Full web framework with ORM, admin, templates, sessions. None of these are needed for a pure API. Brings significant complexity that doesn't serve this project. |
 | Flask | Too minimal — requires manually adding validation, documentation, async support. For a new project, FastAPI gives all of this out of the box. |
 | Django REST Framework | Better than Flask, but still inherits Django's weight. FastAPI is cleaner for API-only projects. |
@@ -308,7 +321,7 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 **Alternatives considered:**
 
 | Framework | Reason Not Chosen |
-|---|---|
+| --- | --- |
 | Vue.js | Equally valid. React chosen for larger ecosystem, more employer recognition, more Stack Overflow coverage. |
 | Svelte | Excellent performance, smaller bundles. Less widely known, fewer integrations. |
 | Vanilla HTML/JS | Sufficient for a static page. Not sufficient for an interactive graph with multiple synchronized UI states — quickly becomes unmanageable. |
@@ -322,7 +335,7 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 **Alternatives considered:**
 
 | Library | Reason Not Chosen |
-|---|---|
+| --- | --- |
 | D3.js | Low-level — you implement force simulation, tick function, drag, zoom, click handlers from scratch. Appropriate when you need a completely custom visualization. Overkill when a network graph is the standard use case. Higher learning value, higher risk of not shipping. |
 | vis.js | Similar positioning to Cytoscape. Cytoscape has better documentation, more active maintenance, more layout algorithms. |
 | Recharts / Chart.js | For rectangular data (bar, line, pie charts). Not designed for arbitrary node-edge graphs. Wrong tool category. |
@@ -371,7 +384,7 @@ services:
 
 ## 5a. Parser–Graph Design (Shipped)
 
-> **Current code** differs from some fields below (e.g. `GraphResult` is nodes + edges only until `AlgorithmEngine` ships). See [learn.md](./learn.md) for the up-to-date study guide.
+> **Shipped:** `GraphResult` holds structural nodes + edges; scores and cycles live on `PipelineResult`. Algorithms consume `nx.DiGraph` via `GraphAdapter`. See [§5a](#5a-parsergraph-design-shipped) and [learn.md](./learn.md).
 
 ### Architecture (V1)
 
@@ -384,24 +397,27 @@ dict[str, FileAnalysis]   canonical parsed record per file
     ↓
 GraphBuilder              reads resolved_deps only (V1)
     ↓
-GraphResult               nodes + edges
+GraphResult               nodes + edges (Ripple domain model)
     ↓
-CycleDetector             nx.simple_cycles + normalize
+GraphAdapter              single conversion to networkx.DiGraph
     ↓
-AlgorithmEngine           PageRank, betweenness, criticality
+networkx.DiGraph          shared by all graph algorithms (built once per run)
+    ├── CycleDetector     nx.simple_cycles + normalize
+    └── AlgorithmEngine   PageRank, betweenness, criticality
     ↓
 PipelineResult            analyses + graph + cycles + scores
 ```
 
-`AnalysisPipeline` wires RepositoryParser → GraphBuilder → CycleDetector → AlgorithmEngine and returns `PipelineResult(analyses, graph, cycles, scores)`.
+`AnalysisPipeline` wires RepositoryParser → GraphBuilder → GraphAdapter → CycleDetector + AlgorithmEngine and returns `PipelineResult(analyses, graph, cycles, scores)`.
 
 ### Layer responsibilities
 
 | Layer | Components | Role |
 |-------|------------|------|
 | Parser | `ASTParser`, `FileAnalysis`, RepositoryParser | Single AST pass; emit all structured facts |
-| Graph | `GraphBuilder`, `GraphResult`, `CycleDetector`, `AlgorithmEngine` | Import graph, cycles, criticality scores |
-| Pipeline | `AnalysisPipeline`, `PipelineResult` | Orchestrate parse → graph → cycles → scores |
+| Graph | `GraphBuilder`, `GraphResult`, `GraphAdapter` | Domain graph; bridge to NetworkX |
+| Algorithms | `CycleDetector`, `AlgorithmEngine` | Operate on `nx.DiGraph` only — no `GraphResult` |
+| Pipeline | `AnalysisPipeline`, `PipelineResult` | Orchestrate parse → graph → adapter → algorithms |
 
 ### Design decisions
 
@@ -410,14 +426,15 @@ PipelineResult            analyses + graph + cycles + scores
 3. **Unused fields are kept** — avoids reparsing and breaking CLI/tests when V2 builders arrive.
 4. **Future builders share the same `dict[str, FileAnalysis]`** — parse once, run `GraphBuilder`, `ClassGraphBuilder`, etc.
 5. **Analysis always runs from the project root** — `parse_repository(root)` indexes paths relative to `root`. Import resolution maps package names (`app.parser.models`) to those paths (exact + suffix). Pointing at a package subfolder (e.g. `app/parser/`) yields bare names like `models.py`, so in-repo imports are misclassified as `external_deps`. Production (zip/clone) uses the uploaded project root; the CLI must do the same. Detail: [learn.md — Analysis root convention](./learn.md#analysis-root-convention).
-6. **`CycleDetector` is a separate algorithm unit** — reads `GraphResult`, uses NetworkX `simple_cycles`, normalizes rotations, returns `CircularDependencyResult`. Wired into `AnalysisPipeline` as `PipelineResult.cycles`; also unit-tested in isolation (`tests/algorithms/test_cycles.py`, 8 cases). Detail: [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection).
-7. **`AlgorithmEngine` scores criticality** — PageRank = how depended-on (importance flows importer→imported); betweenness = bridge/bottleneck; criticality = `0.6 * norm(PR) + 0.4 * norm(BT)` relative change-risk; in/out degree = direct importers / imports. Wired as `PipelineResult.scores`; CLI prints top 10. Tests: `tests/algorithms/test_scoring.py` (12). Glossary: [learn.md — What each property means](./learn.md#1-what-each-property-means).
+6. **`GraphAdapter` is the single NetworkX conversion point** — Ripple owns `GraphResult`; NetworkX is an implementation detail. The adapter converts once per pipeline run; all algorithms share the same `DiGraph`. Conversion only — no algorithm logic in the adapter.
+7. **`CycleDetector` is a separate algorithm unit** — takes `nx.DiGraph`, uses NetworkX `simple_cycles`, normalizes rotations, returns `CircularDependencyResult`. Wired into `AnalysisPipeline` as `PipelineResult.cycles`; unit-tested in isolation (`tests/algorithms/test_cycles.py`, 8 cases). Detail: [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection).
+8. **`AlgorithmEngine` scores criticality** — takes the shared `nx.DiGraph`; PageRank = how depended-on (importance flows importer→imported); betweenness = bridge/bottleneck; criticality = `0.6 * norm(PR) + 0.4 * norm(BT)` relative change-risk; in/out degree = direct importers / imports. One untimed PageRank warm-up runs before the measured stage to exclude one-time SciPy/NetworkX backend initialization from benchmark timings. Wired as `PipelineResult.scores`; CLI prints top 10. Tests: `tests/algorithms/test_scoring.py` (13). Glossary: [learn.md — What each property means](./learn.md#1-what-each-property-means).
 
 ### Future scope
 
 | Version | Capabilities |
 |---------|----------------|
-| **V1 (current)** | File-level **import** graph (`type: "imports"`); cycles + criticality; JSON keeps full `classes[].bases` for later |
+| **V1 (current)** | File-level import graph (type: imports); cycles + criticality; JSON keeps class bases for V2 |
 | **V2** | Class graph (inheritance), function/call graphs, impact analysis, `external_deps` analytics |
 | **V3** | AI-assisted explanations, architectural insights, change-risk estimation |
 
@@ -573,10 +590,12 @@ Response 404: repo_id not found
 **Instrumented stages:** `file_discovery`, `ast_parsing`, `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization`
 
 **Benchmark CLI (no HTTP):**
+
 ```bash
 python -m app.benchmark --repo path/to/project
 ```
-Runs the full pipeline locally and prints the same stage breakdown to stdout. Used for performance testing on large repos without starting the API server.
+
+Runs the full pipeline locally and prints per-stage timing to stdout. PageRank timings measure **steady-state** performance: one untimed warm-up call excludes one-time NetworkX/SciPy backend initialization. A performance note is printed at the end of the report. Used for profiling large repos without starting the API server.
 
 ### GET /api/graph/{repo_id}
 Returns complete graph data for visualization.
@@ -608,9 +627,8 @@ Response 200:
 
 `scores` is a separate ordered list in the export schema (`analysis.scores`); top N = first N entries. Future `GET /api/graph/{repo_id}?top=10` may slice at the HTTP layer.
 
-Response 404: repo not found
-Response 409: analysis not yet complete
-```
+- Response 404: repo not found
+- Response 409: analysis not yet complete
 
 ### GET /api/impact/{repo_id}?file={file_path}
 Returns impact analysis for a specific file.
@@ -675,6 +693,7 @@ Client                          Server
 This is the **async job pattern** used by every system with long-running processing: video encoding pipelines, ML training APIs, report generation services.
 
 **FastAPI implementation:**
+
 ```python
 @app.post("/api/analyze")
 async def analyze(file: UploadFile, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -744,6 +763,7 @@ The `AnalysisPipeline` accepts a `BaseParser` — you can swap implementations w
 
 ```
 PostgreSQL:    stores nodes, edges, scores        (persistence layer)
+GraphAdapter:  GraphResult → nx.DiGraph           (conversion layer)
 NetworkX:      computes PageRank, centrality      (computation layer)
 FastAPI:       orchestrates, serves results       (API layer)
 ```
@@ -796,19 +816,19 @@ Complete trace from zip upload to graph appearing on screen.
          │
          ▼
 8.  GraphBuilder:
-    - Create nx.DiGraph()
-    - Add node for each Python file
-    - Add directed edge for each resolved dependency
-      (source=importer, target=imported)
-    - Track external deps separately (not graph nodes)
+    - Build GraphResult (sorted nodes + directed import edges)
+    - Edges: (importer, imported) for each resolved_deps entry
          │
          ▼
-9.  AlgorithmEngine:
-    - pagerank_scores = nx.pagerank(G, alpha=0.85)
-    - betweenness_scores = nx.betweenness_centrality(G)
-    - Normalize both score sets to [0, 1]
-    - criticality = 0.6 * norm_pagerank + 0.4 * norm_betweenness
-    - cycles = list(nx.simple_cycles(G))
+9.  GraphAdapter:
+    - Convert GraphResult → nx.DiGraph (once per pipeline run)
+    - CycleDetector: nx.simple_cycles + rotation normalization
+    - AlgorithmEngine:
+        - Untimed PageRank warm-up (excludes cold-start from metrics)
+        - pagerank_scores = nx.pagerank(G, alpha=0.85)  [timed]
+        - betweenness_scores = nx.betweenness_centrality(G)  [timed]
+        - Normalize both score sets to [0, 1]
+        - criticality = 0.6 * norm_pagerank + 0.4 * norm_betweenness
     - Each stage records duration (file_discovery through score_normalization)
          │
          ▼
@@ -909,7 +929,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload
 These are features that were considered and explicitly deferred. This section exists so you can explain *why* something is missing, not just that it's missing.
 
 | Feature | Why Excluded from MVP |
-|---|---|
+| --- | --- |
 | GitHub URL ingestion | Adds operational complexity (rate limits, auth, clone time) before the analysis engine is proven. File upload is simpler and gets to the interesting part faster. |
 | Function-level graph nodes | File-level is sufficient to demonstrate the algorithms. Function-level parsing requires handling method calls, dynamic dispatch, and class resolution — a significantly harder problem. |
 | User authentication | No multi-user scenario in the demo. Adds complexity (session management, password hashing) that doesn't serve the portfolio goal. |
@@ -932,7 +952,7 @@ You likely won't need to scale this project. But knowing how you *would* scale i
 
 **Concurrent analyses:** FastAPI's BackgroundTasks runs in the same process. Many simultaneous analysis jobs would compete for CPU.
 
-**Benchmarking:** `python -m app.benchmark --repo path/to/project` runs the full pipeline and prints per-stage timing to stdout. Use this to profile large repos before optimizing; watch for `ast_parsing` dominating wall time on 1000+ file codebases.
+**Benchmarking:** `python -m app.benchmark --repo path/to/project` runs the full pipeline and prints per-stage timing to stdout. Timings reflect steady-state algorithm performance after an untimed PageRank warm-up. Use this to profile large repos before optimizing; watch for `ast_parsing` dominating wall time on 1000+ file codebases.
 
 ### How You Would Scale
 
@@ -949,4 +969,329 @@ Solution: Add a proper job queue (Celery + Redis). Instead of running analysis i
 
 ---
 
-*Architecture version: 1.1 | Project: Ripple | Stack: Python · FastAPI · PostgreSQL · NetworkX · React · Cytoscape.js · Docker*
+## 12. CLI Reference
+
+Every command below is written **in full** at least once (including `cd`, venv activation, and real fixture paths).
+
+**Working directory:** almost all backend commands run from `backend/`. Docker commands run from the project root (`ripple/`).
+
+### Command sheet (all inputs)
+
+One table for every way to run something with **your own input** (repo path, file path, or zip). Replace `{repo-path}` with any project directory on disk.
+
+| What you want | Input you provide | Command | Stages covered |
+|---------------|-------------------|---------|----------------|
+| Parse one file | `.py` file | `python -m app.parser.cli tests/sample_file.py` | AST parse only |
+| Parse a whole repo | directory | `python -m app.parser.cli {repo-path}` | file discovery, AST parse, import resolution |
+| Parse one file in repo context | repo + relative file | `python -m app.parser.cli {repo-path} myapp/auth.py` | Same, with correct resolved_deps |
+| Full analysis report | directory | `python -m app.pipeline {repo-path}` | All stages; cycles + scores printed |
+| Full analysis + JSON | directory + output path | `python -m app.pipeline {repo-path} --json result.json` | All stages + JSON export |
+| Per-stage timings | directory | `python -m app.benchmark --repo {repo-path}` | All stages + timing table |
+| Zip → extract → analyze | zip file | No CLI — see [Zip ingestion](#zip-ingestion-no-cli-yet) | extract, then pipeline |
+| Run automated tests | (pytest fixtures) | `PYTHONPATH=. pytest tests/ -v` | Varies by test file |
+| Zip / ingestion tests | (pytest builds zips) | `PYTHONPATH=. pytest tests/test_ingestion.py -v` | extract, zip-slip, cleanup |
+
+**Examples with the built-in fixture** (swap `tests/fixtures/mini_repo` for your repo):
+
+```bash
+cd backend
+source .venv/bin/activate
+
+python -m app.parser.cli tests/fixtures/mini_repo
+python -m app.pipeline tests/fixtures/mini_repo
+python -m app.benchmark --repo tests/fixtures/mini_repo
+
+# Your own project on disk:
+python -m app.pipeline /path/to/your/python/project
+python -m app.benchmark --repo /path/to/your/python/project
+```
+
+### Pipeline stages vs repo input
+
+Parser, pipeline, and benchmark all take a **project root directory**. You do not pass separate inputs per stage on the CLI — one repo path runs the full chain. The benchmark breaks out timings **after** the run.
+
+| Stage | In benchmark? | Command |
+|-------|-------------|---------|
+| `file_discovery` | Yes | `python -m app.parser.cli {repo-path}` |
+| `ast_parsing` | Yes | Same parser CLI (per-file output) |
+| `import_resolution` | Yes | Same parser CLI (resolved_deps, external_deps) |
+| `graph_construction` | Yes | `python -m app.pipeline {repo-path}` |
+| Cycle detection | Inside `graph_construction` timer | `python -m app.pipeline {repo-path}` |
+| `pagerank_computation` | Yes | `python -m app.benchmark --repo {repo-path}` |
+| `betweenness_computation` | Yes | Same benchmark command |
+| `score_normalization` | Yes | Same benchmark command |
+| Zip extract | No | `IngestionService` API or `pytest tests/test_ingestion.py` |
+
+**Why one repo argument:** `AnalysisPipeline.run(repo_path)` orchestrates every stage. The parser CLI stops before graph building; the benchmark adds timing on top of the same pipeline.
+
+### One-time setup (full commands)
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+After that, keep the venv active in your shell. Re-run `source .venv/bin/activate` in new terminals.
+
+---
+
+### Analysis CLIs (with input)
+
+These commands take **paths as arguments** — a `.py` file, a project directory, or `--repo` for the benchmark.
+
+#### Parser — inspect imports and structure
+
+| Command | Input | What it does |
+|---------|-------|--------------|
+| `python -m app.parser.cli {file-or-repo}` | File or directory | Print imports, classes, functions, deps |
+| `python -m app.parser.cli {repo} {relative-file}` | Repo root + path inside repo | One file with full project context |
+| `python -m app.parser.ast_parser …` | Same as above | Backward-compatible alias |
+
+**Full commands** (run from `backend/` with venv active):
+
+```bash
+cd backend
+source .venv/bin/activate
+
+# Single file — no repo context; resolved_deps will be empty
+python -m app.parser.cli tests/sample_file.py
+
+# Whole project — pass the project root, not a subpackage
+python -m app.parser.cli tests/fixtures/mini_repo
+
+# Use backend/ itself as the project root (paths like app/parser/models.py)
+python -m app.parser.cli .
+
+# One file from inside mini_repo with correct resolved_deps
+python -m app.parser.cli tests/fixtures/mini_repo myapp/auth.py
+```
+
+**Expected on `mini_repo` / `myapp/auth.py`:** `resolved_deps` includes `myapp/models.py`, `myapp/utils.py`; `external_deps` includes `os`, `requests`.
+
+#### Pipeline — full analysis report (+ optional JSON)
+
+| Command | Input | What it does |
+|---------|-------|--------------|
+| `python -m app.pipeline {repo-path}` | Project directory | Parse → graph → cycles → scores; prints summary, edges, cycles, top 10 |
+| `python -m app.pipeline {repo} --json {path}` | Repo + output file | Same analysis; writes JSON to `{path}` |
+| `python -m app.pipeline {repo} --json {path} --no-files` | Repo + output file | JSON without per-file files map |
+
+**Full commands:**
+
+```bash
+cd backend
+source .venv/bin/activate
+
+python -m app.pipeline tests/fixtures/mini_repo
+
+python -m app.pipeline tests/fixtures/mini_repo --json result.json
+
+python -m app.pipeline tests/fixtures/mini_repo --json result.json --no-files
+```
+
+**Expected on `mini_repo`:** 1 circular dependency (`models` ↔ `utils`); `myapp/models.py` or `myapp/utils.py` among top critical files.
+
+#### Benchmark — per-stage timings
+
+| Command | Input | What it does |
+|---------|-------|--------------|
+| `python -m app.benchmark --repo {repo-path}` | Project directory (required) | Full pipeline + per-stage timing table |
+
+**Full command:**
+
+```bash
+cd backend
+source .venv/bin/activate
+
+python -m app.benchmark --repo tests/fixtures/mini_repo
+```
+
+**Output includes:** stage timings (`file_discovery` … `score_normalization`) and a **Performance Notes** block explaining steady-state PageRank measurement (untimed warm-up before the timed stage).
+
+**Project root rule:** pass the directory that owns all relative paths (the repo root), not a package subfolder like `app/parser/`. See [§5a — Analysis root convention](#5a-parsergraph-design-shipped).
+
+---
+
+### Zip ingestion (no CLI yet)
+
+Ripple has **`IngestionService`** (zip → `/tmp/ripple/{job_id}/` → pipeline) but **no `python -m app.ingestion` module**. Zip handling is tested via pytest and used from Python (future API upload flow). That is why zip does not appear in the parser/pipeline/benchmark rows above.
+
+#### Run zip tests (full command)
+
+```bash
+cd backend
+source .venv/bin/activate
+PYTHONPATH=. pytest tests/test_ingestion.py -v
+```
+
+| Test | What it proves |
+|------|----------------|
+| `test_ingest_zip_extracts_to_job_directory` | Zip of `mini_repo` extracts under job dir |
+| `test_ingest_zip_bytes` | In-memory zip bytes work |
+| `test_ingest_zip_generates_job_id_when_omitted` | Auto UUID `job_id` |
+| `test_ingest_zip_missing_file_raises` | Missing zip → error |
+| `test_ingest_zip_rejects_zip_slip` | Path traversal blocked |
+| `test_failed_extract_removes_partial_directory` | Bad zip → no orphan dir |
+| `test_cleanup_removes_job_directory` | `cleanup()` removes extract |
+| `test_ingested_repo_runs_through_pipeline` | Zip → extract → full pipeline |
+
+#### Manual zip → analyze (Python, full flow)
+
+Create a zip from the fixture, extract, run the pipeline — same path production will use after HTTP upload:
+
+```bash
+cd backend
+source .venv/bin/activate
+
+# 1. Create a zip of mini_repo (one-time, for manual testing)
+python -c "
+import zipfile
+from pathlib import Path
+root = Path('tests/fixtures')
+zpath = Path('/tmp/mini_repo.zip')
+with zipfile.ZipFile(zpath, 'w') as z:
+    for f in (root / 'mini_repo').rglob('*.py'):
+        z.write(f, f.relative_to(root.parent).as_posix())
+print('wrote', zpath)
+"
+
+# 2. Ingest + analyze + cleanup
+python -c "
+from app.ingestion import IngestionService
+from app.pipeline import AnalysisPipeline
+
+service = IngestionService(base_dir='/tmp/ripple-manual')
+ingestion = service.ingest_zip('/tmp/mini_repo.zip', job_id='manual-test')
+try:
+    result = AnalysisPipeline().run(ingestion.local_path / 'mini_repo')
+    print('cycles:', result.cycles.cycle_count)
+    print('top file:', result.scores.top(1)[0].file_path)
+finally:
+    service.cleanup(ingestion)
+"
+```
+
+**Note:** after extract, pass the **inner project root** (`…/mini_repo`), not the job dir root, so paths match `myapp/auth.py` not `mini_repo/myapp/auth.py` in the graph.
+
+---
+
+### Server & infrastructure
+
+| Command | Where | What it does |
+|---------|-------|--------------|
+| `uvicorn app.main:app --reload` | `backend/` | FastAPI dev server on port 8000 |
+| `docker compose up --build` | project root | Start frontend, backend, PostgreSQL |
+
+**Full commands:**
+
+```bash
+cd backend
+source .venv/bin/activate
+uvicorn app.main:app --reload
+# Health: curl http://localhost:8000/health  →  {"status":"ok"}
+```
+
+```bash
+cd ripple
+docker compose up --build
+# Frontend http://localhost:5173  ·  Backend http://localhost:8000
+```
+
+---
+
+### Automated tests (pytest)
+
+Run from `backend/` with `PYTHONPATH=.` so the `app` package resolves. Integration tests use **in-repo fixtures** (`tests/fixtures/mini_repo/`) and **temp directories** created by pytest — you do not pass paths on the CLI for those.
+
+#### Run the full suite
+
+```bash
+cd backend
+source .venv/bin/activate
+PYTHONPATH=. pytest tests/ -v
+```
+
+Runs all **83** tests. `-v` prints one line per test (`PASSED` / `FAILED`).
+
+#### Run one suite (full commands)
+
+```bash
+cd backend
+source .venv/bin/activate
+
+PYTHONPATH=. pytest tests/test_parser.py -v       # parser (11)
+PYTHONPATH=. pytest tests/test_graph.py -v       # GraphBuilder (9)
+PYTHONPATH=. pytest tests/test_adapter.py -v     # GraphAdapter (4)
+PYTHONPATH=. pytest tests/test_pipeline.py -v    # AnalysisPipeline on temp repos + mini_repo (9)
+PYTHONPATH=. pytest tests/test_ingestion.py -v   # zip extract + pipeline (8)
+PYTHONPATH=. pytest tests/test_benchmark.py -v   # stage metrics + benchmark notes (7)
+PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export shape (14)
+PYTHONPATH=. pytest tests/algorithms/test_cycles.py -v    # CycleDetector (8)
+PYTHONPATH=. pytest tests/algorithms/test_scoring.py -v    # AlgorithmEngine (13)
+PYTHONPATH=. pytest tests/algorithms/ -v         # cycles + scoring (21)
+```
+
+See [Command sheet](#command-sheet-all-inputs) for which pytest file maps to which capability. Zip-specific tests are **only** in `test_ingestion.py` (no zip CLI exists yet).
+
+#### Run a single test or filter by name
+
+```bash
+cd backend
+source .venv/bin/activate
+
+PYTHONPATH=. pytest tests/test_parser.py::test_future_import_ignored -v
+
+PYTHONPATH=. pytest tests/test_pipeline.py::test_run_parses_mini_repo_integration -v
+
+PYTHONPATH=. pytest tests/ -k "cycle" -v
+
+PYTHONPATH=. pytest tests/ --collect-only
+```
+
+| Shorthand | What it does |
+|-----------|--------------|
+| `PYTHONPATH=. pytest tests/ -q` | Full suite, minimal output |
+| `tests/test_parser.py::test_name` | One test by function name |
+| `tests/test_parser.py::test_external_import_forms[absolute]` | One parametrized case |
+| `-k "cycle"` | Tests whose names contain `cycle` |
+| `--collect-only` | List tests without running |
+
+#### Roadmap milestone gates (full commands)
+
+```bash
+cd backend
+source .venv/bin/activate
+
+PYTHONPATH=. pytest tests/test_parser.py -v
+
+PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ tests/test_pipeline.py -v
+```
+
+#### Manual CLI checks (same inputs tests use)
+
+Use these to **verify behavior by eye** before or after pytest. Inputs match what integration tests exercise:
+
+```bash
+cd backend
+source .venv/bin/activate
+
+# Parser integration (same fixture as test_parse_repository_mini_repo)
+python -m app.parser.cli tests/fixtures/mini_repo
+
+# Pipeline integration (same fixture as test_run_parses_mini_repo_integration)
+python -m app.pipeline tests/fixtures/mini_repo
+
+# Benchmark metrics (same fixture as test_benchmark.py)
+python -m app.benchmark --repo tests/fixtures/mini_repo
+
+# Zip ingestion (no CLI — pytest only)
+PYTHONPATH=. pytest tests/test_ingestion.py -v
+```
+
+**Fixture:** `tests/fixtures/mini_repo/` — intentionally cyclic (`myapp/models.py` ↔ `myapp/utils.py`); shared by parser, pipeline, benchmark, and multiple pytest modules.
+
+---
+
+*Architecture version: 1.2 | Project: Ripple | Stack: Python · FastAPI · PostgreSQL · NetworkX · React · Cytoscape.js · Docker*

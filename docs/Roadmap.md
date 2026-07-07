@@ -89,7 +89,7 @@ Run `python -m app.parser.cli path/to/any_file.py` and see correctly extracted i
 - [x] Implement `GraphBuilder` class in `backend/app/graph/builder.py`
 - [x] Resolve relative imports to absolute file paths using folder structure
 - [x] Handle unresolvable imports gracefully (external packages like `requests`, `numpy` — skip or add as external nodes)
-- [x] Build `nx.DiGraph` where nodes are file paths and edges are import relationships — via `graph_result_to_digraph`
+- [x] Build `nx.DiGraph` where nodes are file paths and edges are import relationships — via `GraphAdapter` (single conversion per pipeline run)
 - [x] Implement `AlgorithmEngine` class in `backend/app/graph/algorithms/scoring.py`
 - [x] Compute PageRank scores (`nx.pagerank`, alpha=0.85)
 - [x] Compute Betweenness Centrality (`nx.betweenness_centrality`)

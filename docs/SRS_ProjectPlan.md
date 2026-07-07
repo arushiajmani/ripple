@@ -653,14 +653,14 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 
 ### Verification (how to test requirements)
 
-Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**77 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests).
+Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**83 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests) · Full CLI reference: [Architecture §12](./Architecture.md#12-cli-reference).
 
 
 | Requirement                            | Status          | Verified by                                                                     |
 | -------------------------------------- | --------------- | ------------------------------------------------------------------------------- |
 | FR-02 Index `.py` files                | Partial         | `test_collect_python_files_skips_cache_dirs`, `test_parse_repository_mini_repo` |
 | FR-03 Parse imports + dependency graph | Partial         | `test_parser.py` (11), `test_graph.py` (9), `test_pipeline.py` (9)              |
-| FR-04 PageRank                         | Partial         | `test_scoring.py` (12) + pipeline; API/UI pending — [learn.md](./learn.md#phase-1-week-2--criticality-scoring) |
+| FR-04 PageRank                         | Partial         | `test_scoring.py` (13) + pipeline; API/UI pending — [learn.md](./learn.md#phase-1-week-2--criticality-scoring) |
 | FR-05 Betweenness                      | Partial         | same as FR-04                                                                   |
 | FR-06 Circular dependencies            | Partial         | `test_cycles.py` (8) + `test_pipeline.py`; API/UI pending — [learn.md](./learn.md#phase-1-week-2--cycle-detection) |
 | FR-07 REST API                         | Not implemented | `test_api.py` stub                                                              |

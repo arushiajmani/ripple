@@ -69,6 +69,13 @@ def test_format_metrics_table_includes_stages(pipeline: AnalysisPipeline) -> Non
     assert "total" in table
 
 
+def test_benchmark_performance_notes_constant() -> None:
+    from app.benchmark.__main__ import PERFORMANCE_NOTES
+
+    assert "steady-state" in PERFORMANCE_NOTES
+    assert "warm-up" in PERFORMANCE_NOTES.lower()
+
+
 def test_empty_repo_has_parse_and_graph_metrics(
     pipeline: AnalysisPipeline, tmp_path: Path
 ) -> None:
