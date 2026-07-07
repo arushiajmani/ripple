@@ -164,13 +164,13 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 | Graph | `tests/test_graph.py` | 9 | `GraphBuilder` — synthetic `FileAnalysis`, no parser |
 | Adapter | `tests/test_adapter.py` | 4 | `GraphAdapter` — `GraphResult` → `nx.DiGraph` |
 | Pipeline | `tests/test_pipeline.py` | 9 | `AnalysisPipeline` — parse → graph → adapter → algorithms |
-| Benchmark | `tests/test_benchmark.py` | 7 | Stage metrics, CLI table, performance notes |
+| Benchmark | `tests/test_benchmark.py` | 16 | Stage metrics, grouped CLI table, `metrics_iterator`, edge cases |
 | Ingestion | `tests/test_ingestion.py` | 8 | Zip extract, zip-slip, cleanup, pipeline |
 | Serialize | `tests/test_serialize.py` | 14 | JSON (metadata, summary, statistics, graph, …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `nx.DiGraph` only |
 | Scoring | `tests/algorithms/test_scoring.py` | 13 | `AlgorithmEngine` — PageRank, betweenness, criticality, warm-up |
 
-**83 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
+**92 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
 
 - **CLI commands (all tools + tests):** [§12 CLI Reference](#12-cli-reference)
 - **Quick commands:** [README — Tests](../README.md#tests)
@@ -1226,7 +1226,7 @@ PYTHONPATH=. pytest tests/test_graph.py -v       # GraphBuilder (9)
 PYTHONPATH=. pytest tests/test_adapter.py -v     # GraphAdapter (4)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # AnalysisPipeline on temp repos + mini_repo (9)
 PYTHONPATH=. pytest tests/test_ingestion.py -v   # zip extract + pipeline (8)
-PYTHONPATH=. pytest tests/test_benchmark.py -v   # stage metrics + benchmark notes (7)
+PYTHONPATH=. pytest tests/test_benchmark.py -v   # stage metrics + benchmark notes (16)
 PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export shape (14)
 PYTHONPATH=. pytest tests/algorithms/test_cycles.py -v    # CycleDetector (8)
 PYTHONPATH=. pytest tests/algorithms/test_scoring.py -v    # AlgorithmEngine (13)

@@ -741,7 +741,7 @@ print(ast.dump(tree, indent=2))
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v                    # all 83 tests
+PYTHONPATH=. pytest tests/ -v                    # all 92 tests
 PYTHONPATH=. pytest tests/test_parser.py -v      # parser only (11)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder only (9)
 PYTHONPATH=. pytest tests/test_adapter.py -v     # graph adapter only (4)
@@ -1326,7 +1326,9 @@ Stages (same shape as future `GET /api/status` `metrics[]`):
 | `betweenness_computation` | `nx.betweenness_centrality` |
 | `score_normalization` | min-max normalize + `NodeScore` assembly |
 
-Timings live on `PipelineResult.metrics` (`list[StageMetric]`). Each metric has `stage_name`, `duration_ms`, and optional `files_processed`.
+Timings live on `PipelineResult.metrics` (`list[StageMetric]`). Each metric has `stage_name`, `duration_ms`, and optional `files_processed`. Duplicate `stage_name` values raise `DuplicateStageMetricError`.
+
+**CLI output:** `format_metrics_table()` groups stages under **Repository → Parsing → Graph → Algorithms** (unknown stages appear under **Other**). Percentages sum to 100% across included stages.
 
 **Steady-state performance:** one untimed PageRank runs before the timed `pagerank_computation` stage to exclude one-time NetworkX/SciPy backend initialization. The CLI prints a short performance note at the end of the report.
 
@@ -1340,7 +1342,7 @@ for m in result.metrics:
 
 ### Test cases (`test_benchmark.py`)
 
-**7 tests** — metrics presence, `files_processed`, non-negative durations, `to_dict`, table formatting, performance notes, empty repo.
+**16 tests** — pipeline metrics integration, `format_metrics_table` / `metrics_iterator` formatting, edge cases (empty, single, unknown, duplicate stages), percentage totals, performance notes.
 
 ```bash
 PYTHONPATH=. pytest tests/test_benchmark.py -v
@@ -1348,11 +1350,20 @@ PYTHONPATH=. pytest tests/test_benchmark.py -v
 
 | Test | What it proves |
 |------|----------------|
-| `test_pipeline_result_includes_all_stage_metrics` | All 7 stages present in order |
+| `test_pipeline_result_includes_all_stage_metrics` | All 7 stages present in order; unique `stage_name` values |
 | `test_metrics_have_expected_files_processed` | File counts on parse/graph stages |
 | `test_metrics_durations_are_non_negative` | No negative ms |
 | `test_stage_metric_to_dict` | API-ready dict shape |
-| `test_format_metrics_table_includes_stages` | CLI table output |
+| `test_format_metrics_table_empty` | Empty list → `(no metrics)` |
+| `test_format_metrics_table_single_metric` | One stage formats; 100% row |
+| `test_format_metrics_table_includes_stages` | Group headers + labels + total |
+| `test_format_metrics_table_groups_stages_in_pipeline_order` | Repository → Parsing → Graph → Algorithms |
+| `test_format_metrics_table_percentages_sum_to_100` | Stage % values sum ≈ 100 |
+| `test_format_metrics_table_unknown_stage_uses_raw_name` | Unknown stage under **Other** |
+| `test_format_metrics_table_rejects_duplicate_stage_names` | `DuplicateStageMetricError` on dupes |
+| `test_metrics_iterator_rejects_duplicate_stage_names` | Same for `metrics_iterator` |
+| `test_metrics_iterator_yields_canonical_order_from_shuffled_input` | Shuffled input → `STAGE_ORDER` |
+| `test_metrics_iterator_appends_unknown_stages_after_known` | Unknown stages after known |
 | `test_benchmark_performance_notes_constant` | Performance note mentions steady-state / warm-up |
 | `test_empty_repo_has_parse_and_graph_metrics` | Empty dir still records stages |
 
@@ -1743,7 +1754,7 @@ That is why `pytest --collect-only` reports **11** tests in `test_parser.py` eve
 
 ## Testing overview
 
-**83 tests** across nine suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+**92 tests** across nine suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
 
 This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests) or [Architecture — CLI Reference](./Architecture.md#12-cli-reference). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
 
@@ -1755,7 +1766,7 @@ This section is the **detailed test catalog** — what each file proves and how 
 | Graph | `test_graph.py` | 9 | Unit | `GraphBuilder` rules via synthetic `FileAnalysis` dicts |
 | Adapter | `test_adapter.py` | 4 | Unit | `GraphAdapter`: `GraphResult` → `nx.DiGraph` |
 | Pipeline | `test_pipeline.py` | 9 | Integration + unit | `AnalysisPipeline`; parse → graph → adapter → algorithms |
-| Benchmark | `test_benchmark.py` | 7 | Integration | Stage metrics, table formatting, performance notes |
+| Benchmark | `test_benchmark.py` | 16 | Unit + integration | `StageMetric`, grouped `format_metrics_table`, `metrics_iterator`, dupes |
 | Ingestion | `test_ingestion.py` | 8 | Unit | `IngestionService`: zip path/bytes, zip-slip, cleanup |
 | Serialize | `test_serialize.py` | 14 | Unit | JSON (`metadata` / `summary` / `statistics` / `graph` / …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `nx.DiGraph` |
@@ -1768,6 +1779,7 @@ test_adapter.py    →  GraphAdapter                  →  nx.DiGraph      (no a
 test_pipeline.py   →  AnalysisPipeline              →  PipelineResult  (full stack)
 test_serialize.py  →  PipelineResult.to_dict/write_json → JSON
 test_cycles.py     →  CycleDetector                 →  CircularDependencyResult
+test_benchmark.py  →  format_metrics_table / metrics_iterator  →  grouped CLI table
 test_scoring.py    →  AlgorithmEngine               →  ScoringResult
 ```
 

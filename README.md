@@ -394,7 +394,7 @@ PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder (9)
 PYTHONPATH=. pytest tests/test_adapter.py -v     # graph adapter (4)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
 PYTHONPATH=. pytest tests/test_ingestion.py -v   # ingestion (8)
-PYTHONPATH=. pytest tests/test_benchmark.py -v   # metrics + benchmark (7)
+PYTHONPATH=. pytest tests/test_benchmark.py -v   # metrics + benchmark (16)
 PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (14)
 PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (13)
 ```
@@ -406,7 +406,7 @@ PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (13)
 | **`test_adapter.py`** | 4 | `GraphAdapter`: empty graph, nodes/edges copy, `GraphBuilder` integration |
 | **`test_pipeline.py`** | 9 | End-to-end parse → graph → adapter → algorithms; `test_small_cycle`; `mini_repo` integration |
 | **`test_ingestion.py`** | 8 | Zip extract, zip-slip rejection, cleanup, pipeline integration |
-| **`test_benchmark.py`** | 7 | Stage metrics on `PipelineResult`, table formatting, performance notes |
+| **`test_benchmark.py`** | 16 | Stage metrics, grouped table formatting, `metrics_iterator`, duplicate/unknown stages, percentages |
 | **`test_serialize.py`** | 14 | metadata, summary, statistics, graph, analysis, files |
 | **`test_cycles.py`** | 8 | `CycleDetector`: empty/acyclic graphs, simple cycles, self-loops, disjoint cycles, normalization |
 | **`test_scoring.py`** | 13 | `AlgorithmEngine`: normalize, PageRank fan-in, betweenness bridge, criticality weights, warm-up, `top()` |
