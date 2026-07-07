@@ -41,7 +41,8 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 * **JSON export** — `result.write_json("result.json")` or `python -m app.pipeline <repo> --json result.json`
 * **CLI** — parser: `python -m app.parser.cli`; pipeline: `python -m app.pipeline` (report + optional JSON)
 * **Zip ingestion** — `IngestionService`: extract upload to `/tmp/ripple/{job_id}/`, then run pipeline; `cleanup()` when done
-* **REST API (partial)** — `POST /api/analyze` accepts a zip upload, runs ingest → pipeline → cleanup synchronously, returns full analysis JSON
+* **GitHub ingestion** — clone public repos via URL (`git clone --depth 1`); URL validation, existence check (`git ls-remote`), shallow clone to same job-dir layout
+* **REST API (partial)** — `POST /api/analyze` accepts a **zip upload** or a **GitHub URL** (`github_url` form field), runs ingest → pipeline → cleanup synchronously, returns full analysis JSON
 * **Pipeline metrics** — per-stage timings on `PipelineResult.metrics`
 * **Benchmark CLI** — `python -m app.benchmark --repo path/to/project`
 
@@ -137,7 +138,13 @@ ripple/
 │   │   ├── benchmark/
 │   │   │   └── __main__.py    # python -m app.benchmark --repo <path>
 │   │   ├── ingestion/
-│   │   │   └── service.py       # IngestionService (zip → /tmp/ripple/{job_id}/)
+│   │   │   ├── models.py        # RepositoryHandle (local_path for pipeline)
+│   │   │   ├── protocol.py      # IngestionServiceProtocol
+│   │   │   ├── zip.py           # ZipIngestion
+│   │   │   ├── github.py        # GitHubIngestion (clone + validation)
+│   │   │   ├── validation.py    # parse_github_url
+│   │   │   ├── exceptions.py
+│   │   │   └── service.py       # IngestionService facade
 │   │   └── pipeline/
 │   │       ├── pipeline.py      # AnalysisPipeline (parse → graph → cycles → scores)
 │   │       ├── serialize.py     # PipelineResult → JSON
@@ -148,7 +155,9 @@ ripple/
 │       ├── test_graph.py        # graph builder tests (9)
 │       ├── test_adapter.py      # graph adapter tests (4)
 │       ├── test_pipeline.py     # pipeline tests (9)
-│       ├── test_api.py          # API tests (stub)
+│       ├── test_ingestion.py    # zip extract, zip-slip, cleanup (8)
+│       ├── test_github_ingestion.py  # GitHub URL, mocked clone, live integration (17)
+│       ├── test_api.py          # POST /api/analyze — zip + GitHub (11)
 │       ├── algorithms/
 │       │   ├── test_cycles.py   # cycle detection (8)
 │       │   └── test_scoring.py  # PageRank / criticality (13)
@@ -168,6 +177,7 @@ ripple/
 
 * Docker & Docker Compose (for full stack)
 * Python 3.11+ (local backend / parser development)
+* **git** (GitHub URL ingestion — `git clone`, `git ls-remote`)
 * Node.js 20+ (local frontend development)
 
 ---
@@ -337,17 +347,18 @@ finally:
     service.cleanup(ingestion)
 ```
 
-Extract path: `/tmp/ripple/{job_id}/` (override with `IngestionService(base_dir=...)`).
+Extract path: `/tmp/ripple/{job_id}/` (override with `IngestionService(base_dir=...)`). GitHub clones land at the same path; the pipeline always receives `ingestion.local_path` regardless of source.
 
 **Test it:**
 
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/test_ingestion.py -v   # all 8 ingestion tests
+PYTHONPATH=. pytest tests/test_ingestion.py -v          # zip (8)
+PYTHONPATH=. pytest tests/test_github_ingestion.py -v   # GitHub (17; includes 1 live clone)
 ```
 
-Study guide: [What each property means](docs/learn.md#1-what-each-property-means) · [Criticality Scoring](docs/learn.md#phase-1-week-2--criticality-scoring) · [Pipeline](docs/learn.md#phase-1--analysis-pipeline) · [Ingestion](docs/learn.md#phase-1--zip-ingestion)
+Study guide: [What each property means](docs/learn.md#1-what-each-property-means) · [Criticality Scoring](docs/learn.md#phase-1-week-2--criticality-scoring) · [Pipeline](docs/learn.md#phase-1--analysis-pipeline) · [Ingestion](docs/learn.md#phase-1--ingestion)
 
 ---
 
@@ -361,20 +372,30 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-### API (zip upload)
+### API (zip upload or GitHub URL)
 
-From the **repo root** (path to the zip is relative to where you run curl):
+From the **repo root** (path to the zip is relative to where you run curl). Requires **git** on the server for GitHub URLs.
 
 ```bash
 # Start server (in backend/)
 cd backend && source .venv/bin/activate && uvicorn app.main:app --reload
 
-# Upload mini_repo fixture and pretty-print JSON (repo root, another terminal)
+# Zip upload — pretty-print JSON (another terminal, from repo root)
 curl -s -X POST http://localhost:8000/api/analyze \
   -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -m json.tool
+
+# GitHub URL — small public Python repo
+curl -s -X POST http://localhost:8000/api/analyze \
+  -F "github_url=https://github.com/pypa/sampleproject" | python3 -m json.tool
 ```
 
-Returns `job_id`, `status`, `repository` (`name` + `source`), and the full analysis payload. Score floats are rounded to four decimal places in JSON.
+Provide **either** `file` or `github_url`, not both. Returns `job_id`, `status`, `repository` (`name` + `source`: `zip` or `github`), and the full analysis payload. Score floats are rounded to four decimal places in JSON.
+
+| Error | When |
+|-------|------|
+| 400 | Empty upload, invalid zip, bad GitHub URL, both inputs, no Python files |
+| 404 | GitHub repo not found or not accessible |
+| 502 | `git clone` failed |
 
 Health check: `curl http://localhost:8000/health`
 
@@ -398,8 +419,9 @@ source .venv/bin/activate
 python -m app.parser.cli tests/fixtures/mini_repo
 python -m app.pipeline tests/fixtures/mini_repo
 python -m app.benchmark --repo tests/fixtures/mini_repo
-PYTHONPATH=. pytest tests/test_ingestion.py -v   # zip tests (no zip CLI yet)
-PYTHONPATH=. pytest tests/test_api.py -v         # HTTP upload → pipeline (6)
+PYTHONPATH=. pytest tests/test_ingestion.py -v          # zip (8)
+PYTHONPATH=. pytest tests/test_github_ingestion.py -v   # GitHub (17)
+PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP zip + GitHub (11)
 ```
 
 Use any directory as `<repo-path>` for parser / pipeline / benchmark. Full sheet: [Architecture — Command sheet](docs/Architecture.md#command-sheet-all-inputs).
@@ -412,22 +434,25 @@ PYTHONPATH=. pytest tests/test_parser.py -v      # parser (15)
 PYTHONPATH=. pytest tests/test_graph.py -v       # graph builder (9)
 PYTHONPATH=. pytest tests/test_adapter.py -v     # graph adapter (4)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
-PYTHONPATH=. pytest tests/test_ingestion.py -v   # ingestion (8)
+PYTHONPATH=. pytest tests/test_ingestion.py -v          # zip (8)
+PYTHONPATH=. pytest tests/test_github_ingestion.py -v   # GitHub (17)
 PYTHONPATH=. pytest tests/test_benchmark.py -v   # metrics + benchmark (16)
-PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (15)
-PYTHONPATH=. pytest tests/test_api.py -v          # API (6)
+PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (16)
+PYTHONPATH=. pytest tests/test_api.py -v          # API (11)
 PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (13)
 ```
 
 | Suite | Tests | Covers |
 |-------|-------|--------|
-| **`test_parser.py`** | 11 | Import forms (parametrized), `__future__` / syntax edge cases, `mini_repo` integration |
+| **`test_parser.py`** | 15 | Import forms (parametrized), `__future__` / syntax edge cases, `mini_repo` integration |
 | **`test_graph.py`** | 9 | Empty/single-node graphs; dependency edges; dedup; missing deps; cycles; self-loops; dict-key semantics; syntax-error files |
 | **`test_adapter.py`** | 4 | `GraphAdapter`: empty graph, nodes/edges copy, `GraphBuilder` integration |
 | **`test_pipeline.py`** | 9 | End-to-end parse → graph → adapter → algorithms; `test_small_cycle`; `mini_repo` integration |
 | **`test_ingestion.py`** | 8 | Zip extract, zip-slip rejection, cleanup, pipeline integration |
+| **`test_github_ingestion.py`** | 17 | GitHub URL parsing, mocked clone, live integration (`pypa/sampleproject`) |
 | **`test_benchmark.py`** | 16 | Stage metrics, grouped table formatting, `metrics_iterator`, duplicate/unknown stages, percentages |
-| **`test_serialize.py`** | 14 | metadata, summary, statistics, graph, analysis, files |
+| **`test_serialize.py`** | 16 | metadata, summary, statistics, graph, analysis, files |
+| **`test_api.py`** | 11 | `POST /api/analyze` — zip upload, GitHub URL, validation errors, cleanup |
 | **`test_cycles.py`** | 8 | `CycleDetector`: empty/acyclic graphs, simple cycles, self-loops, disjoint cycles, normalization |
 | **`test_scoring.py`** | 13 | `AlgorithmEngine`: normalize, PageRank fan-in, betweenness bridge, criticality weights, warm-up, `top()` |
 
@@ -475,6 +500,6 @@ npm run dev
 * [x] Pipeline tests (`tests/test_pipeline.py`, 9 cases)
 * [x] `AlgorithmEngine` — PageRank, betweenness, criticality (`test_scoring.py`, 13 cases)
 * [x] JSON export — `serialize.py`, `--json PATH` (`test_serialize.py`)
-* [x] `IngestionService` (zip upload, temp extract, cleanup)
-* [x] `POST /api/analyze` — sync zip upload → pipeline → cleanup (`tests/test_api.py`)
+* [x] `IngestionService` (zip upload, GitHub clone, temp extract, cleanup)
+* [x] `POST /api/analyze` — sync zip or GitHub URL → pipeline → cleanup (`tests/test_api.py`, 11 cases)
 * [x] Pipeline stage metrics and benchmark CLI

@@ -80,6 +80,11 @@ def test_stage_metric_to_dict() -> None:
         "files_processed": 4,
     }
 
+    assert StageMetric("pagerank_computation", 1.0).to_dict() == {
+        "stage_name": "pagerank_computation",
+        "duration_ms": 1.0,
+    }
+
 
 def test_format_metrics_table_empty() -> None:
     assert format_metrics_table([]) == "  (no metrics)"

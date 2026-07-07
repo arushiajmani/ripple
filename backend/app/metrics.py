@@ -15,12 +15,13 @@ class StageMetric:
     duration_ms: float
     files_processed: int | None = None
 
-    def to_dict(self) -> dict[str, float | str | int | None]:
-        return {
+    def to_dict(self) -> dict[str, float | str | int]:
+        payload: dict[str, float | str | int | None] = {
             "stage_name": self.stage_name,
             "duration_ms": round(self.duration_ms, 2),
             "files_processed": self.files_processed,
         }
+        return {key: value for key, value in payload.items() if value is not None}
 
 
 class StageTimer:

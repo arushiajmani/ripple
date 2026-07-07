@@ -156,30 +156,22 @@ Docker is included because:
 
 ### Component 1: Ingestion Module
 
-**Responsibility:** Accept a GitHub URL, clone the repository locally, validate it is a Python project, index all `.py` files.
+**Responsibility:** Accept a zip upload or public GitHub URL, materialize the repository on disk, validate inputs, index all `.py` files. Return a `RepositoryHandle` whose `local_path` is the only handoff to the analysis pipeline.
 
-**Key Design Decision — Where to clone?**
-Options:
+**Key Design Decision — Where to clone/extract?**
 
-- Clone to disk (temp directory) → simple, fast, easy to read files
+- Clone/extract to disk (temp directory) → simple, fast, easy to read files
 - Clone to memory → complex, unnecessary
 
-Decision: Clone to a temp directory (`/tmp/ripple/{repo_id}/`). Clean up after analysis completes.
+Decision: Use a temp job directory (`/tmp/ripple/{job_id}/`). Clean up after analysis completes. Zip and GitHub paths are invisible to `AnalysisPipeline`.
 
-**Interface:**
+**Shipped interface (`IngestionService`):**
 
-```python
-class IngestionService:
-    def ingest(self, github_url: str) -> Repository:
-        # Returns a Repository object with:
-        # - repo_id (UUID)
-        # - local_path (str)
-        # - python_files (List[str])
-        # - metadata (name, owner, language stats)
-        ...
-```
+- `ingest_zip` / `ingest_zip_bytes` — zip extraction with zip-slip protection
+- `ingest_github` — URL validation, `git ls-remote`, shallow `git clone --depth 1`
+- `cleanup` — remove job directory
 
-**System Design Concept — Idempotency:**
+**System Design Concept — Idempotency (planned):**
 If the same URL is submitted twice, Ripple should return the cached result rather than recloning. This is achieved by hashing the URL to generate a deterministic `repo_id` and checking PostgreSQL before cloning. This is called **idempotent ingestion** and is a standard pattern in data pipelines.
 
 ---
@@ -341,10 +333,10 @@ This section traces exactly what happens from the moment a user pastes a URL to 
 1. USER pastes GitHub URL into React frontend
         │
         ▼
-2. Frontend sends POST /api/analyze { "url": "https://github.com/..." }
+2. Frontend sends POST /api/analyze (multipart: `file` or `github_url`)
         │
         ▼
-3. FastAPI receives request, validates URL format
+3. FastAPI receives request, validates input (URL format / zip integrity)
         │
         ▼
 4. Check PostgreSQL: has this repo been analyzed before?
@@ -352,10 +344,10 @@ This section traces exactly what happens from the moment a user pastes a URL to 
    └── NO  → continue
         │
         ▼
-5. IngestionService.ingest(url)
-   - git clone to /tmp/ripple/{repo_id}/
+5. IngestionService (zip extract or `ingest_github`)
+   - materialize to /tmp/ripple/{job_id}/
    - find all .py files
-   - store file list in PostgreSQL (repos table)
+   - store file list in PostgreSQL (repos table)  [planned]
         │
         ▼
 6. ASTParser.parse_file() for each .py file
@@ -506,6 +498,20 @@ GraphQL is powerful when clients need to request exactly the fields they want ac
 
 ### Endpoints
 
+**Shipped today (sync, no DB):** `POST /api/analyze` accepts multipart form data — **either** `file` (zip) **or** `github_url`. Returns `200` with full analysis JSON immediately. Requires `git` on the server for GitHub URLs.
+
+```bash
+curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -m json.tool
+
+curl -s -X POST http://localhost:8000/api/analyze \
+  -F "github_url=https://github.com/pypa/sampleproject" | python3 -m json.tool
+```
+
+Tests: `PYTHONPATH=. pytest tests/test_api.py -v` (11 cases).
+
+**Planned (async + PostgreSQL):**
+
 ```
 POST   /api/analyze
        Request:  { "github_url": "https://github.com/owner/repo" }
@@ -653,17 +659,18 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 
 ### Verification (how to test requirements)
 
-Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**104 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests) · Full CLI reference: [Architecture §12](./Architecture.md#12-cli-reference).
+Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**126 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests) · Full CLI reference: [Architecture §12](./Architecture.md#12-cli-reference).
 
 
 | Requirement                            | Status          | Verified by                                                                     |
 | -------------------------------------- | --------------- | ------------------------------------------------------------------------------- |
+| FR-01 Accept public GitHub URL           | Implemented     | `test_github_ingestion.py`, `test_api.py` (GitHub form field) |
 | FR-02 Index `.py` files                | Partial         | `test_collect_python_files_skips_cache_dirs`, `test_parse_repository_mini_repo` |
 | FR-03 Parse imports + dependency graph | Partial         | `test_parser.py` (15), `test_graph.py` (9), `test_pipeline.py` (9)              |
 | FR-04 PageRank                         | Partial         | `test_scoring.py` (13) + pipeline; graph/status API pending — [learn.md](./learn.md#phase-1-week-2--criticality-scoring) |
 | FR-05 Betweenness                      | Partial         | same as FR-04                                                                   |
 | FR-06 Circular dependencies            | Partial         | `test_cycles.py` (8) + `test_pipeline.py`; graph/status API pending — [learn.md](./learn.md#phase-1-week-2--cycle-detection) |
-| FR-07 REST API                         | Partial         | Sync `POST /api/analyze` (zip) — `tests/test_api.py` (6); async/DB endpoints pending |
+| FR-07 REST API                         | Partial         | Sync `POST /api/analyze` (zip or `github_url`) — `tests/test_api.py` (11); async/DB endpoints pending |
 | FR-13 Pipeline metrics                 | Partial         | `PipelineResult.metrics`; status API pending                                    |
 | FR-14 Benchmark CLI                    | Implemented     | `python -m app.benchmark --repo` (`tests/test_benchmark.py`)                    |
 
@@ -702,17 +709,18 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**104 te
 **Week 3: Ingestion + Integration**
 
 - [x] Implement `IngestionService` — zip upload to temp directory (`/tmp/ripple/{job_id}/`)
-- [ ] Implement `IngestionService` — clone a GitHub repo to temp directory
-- [x] Walk repo and parse all `.py` files — `parse_repository()` / zip extract via `ingest_zip` / `ingest_zip_bytes`
+- [x] Implement `IngestionService` — clone a public GitHub repo to temp directory (`ingest_github`, shallow clone)
+- [x] Walk repo and parse all `.py` files — `parse_repository()` / zip extract / git clone
 - [x] Wire parse → graph → cycles → scores in `AnalysisPipeline`
-- [x] Wire `IngestionService` → `AnalysisPipeline` in API layer — sync `POST /api/analyze` (`ingest_zip_bytes` → `run` → `cleanup`)
+- [x] Wire `IngestionService` → `AnalysisPipeline` in API layer — sync `POST /api/analyze` (zip **or** `github_url` form field)
 - [x] Clean up temp directory after analysis (`IngestionService.cleanup`)
 - [x] Wire full pipeline with pipeline stage instrumentation (`PipelineResult.metrics`)
 - [x] Add benchmark CLI: `python -m app.benchmark --repo path/to/project`
 - [x] Output results as JSON file — `PipelineResult.write_json()` / `--json PATH` (includes `repository` metadata; scores rounded to 4 dp)
 - [ ] Test against 3 different real Python repos
 - [x] Milestone: CLI produces `result.json` with nodes, edges, scores, and cycles (`--json`)
-- [x] Milestone: `curl -X POST /api/analyze -F file=@…zip` returns full analysis JSON (see [README](../README.md#api-zip-upload))
+- [x] Milestone: `curl -X POST /api/analyze -F file=@…zip` returns full analysis JSON (see [README](../README.md#api-zip-upload-or-github-url))
+- [x] Milestone: `curl -X POST /api/analyze -F github_url=https://github.com/pypa/sampleproject` returns full analysis JSON
 
 *At the end of Phase 1, the hard work is done. Everything after this is presentation.*
 
@@ -725,7 +733,7 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**104 te
 **Week 4: FastAPI Setup + Database**
 
 - [x] Set up FastAPI project, Docker Compose (FastAPI + PostgreSQL) — health endpoint only
-- [x] Implement `POST /api/analyze` (partial) — sync zip upload, returns full analysis JSON (`tests/test_api.py`)
+- [x] Implement `POST /api/analyze` (partial) — sync zip or GitHub URL, returns full analysis JSON (`tests/test_api.py`, 11 cases)
 - [ ] Implement PostgreSQL schema (migrations via Alembic)
 - [ ] Implement `POST /api/analyze` (full) — async 202, job record in DB, background analysis
 - [ ] Implement `GET /api/status/{repo_id}` — returns job status and `metrics[]` when complete

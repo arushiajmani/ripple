@@ -1,117 +1,79 @@
-"""Zip ingestion: extract uploaded archives to a temp job directory.
+"""Unified ingestion facade — zip uploads and GitHub clones to temp job dirs.
 
-Extracted layout::
-
-    /tmp/ripple/{job_id}/
-        ... contents of the zip ...
-
-``IngestionResult.local_path`` is that directory. Pass it to ``AnalysisPipeline.run``
-or ``parse_repository``. Call ``cleanup`` when analysis finishes.
+Every ingestion path returns a :class:`~app.ingestion.models.RepositoryHandle`
+whose ``local_path`` is the directory the analysis pipeline should consume.
+How that directory was produced is invisible to downstream stages.
 """
 
 from __future__ import annotations
 
-import io
-import shutil
-import uuid
-import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 
-from app.parser.repository import collect_python_files
+from app.ingestion.github import GitCloner, GitHubIngestion, GitRemoteChecker
+from app.ingestion.models import IngestionResult, RepositoryHandle
+from app.ingestion.protocol import IngestionServiceProtocol
+from app.ingestion.zip import ZipIngestion
 
 DEFAULT_BASE_DIR = Path("/tmp/ripple")
 
 
-@dataclass(frozen=True)
-class IngestionResult:
-    """Outcome of extracting one zip archive."""
-
-    job_id: str
-    local_path: Path
-
-    @property
-    def python_files(self) -> set[str]:
-        """Relative ``.py`` paths under ``local_path`` (skips venv, ``__pycache__``, …)."""
-        return collect_python_files(self.local_path)
-
-
 class IngestionService:
-    """Accept a zip file and extract it to ``{base_dir}/{job_id}/``."""
+    """Bring external sources (zip archives, GitHub URLs) onto local disk."""
 
-    def __init__(self, base_dir: Path | str = DEFAULT_BASE_DIR) -> None:
-        self._base_dir = Path(base_dir)
+    def __init__(
+        self,
+        base_dir: Path | str = DEFAULT_BASE_DIR,
+        *,
+        remote_checker: GitRemoteChecker | None = None,
+        cloner: GitCloner | None = None,
+    ) -> None:
+        root = Path(base_dir)
+        self._zip = ZipIngestion(root)
+        self._github = GitHubIngestion(
+            root,
+            remote_checker=remote_checker,
+            cloner=cloner,
+        )
 
     def ingest_zip(
         self,
         zip_path: str | Path,
         *,
         job_id: str | None = None,
-    ) -> IngestionResult:
+    ) -> RepositoryHandle:
         """Extract ``zip_path`` to ``{base_dir}/{job_id}/`` and return the job paths."""
-        path = Path(zip_path)
-        if not path.is_file():
-            raise FileNotFoundError(f"Zip file not found: {path}")
-
-        job = job_id or str(uuid.uuid4())
-        dest = self._job_dir(job)
-        dest.mkdir(parents=True, exist_ok=False)
-
-        try:
-            with zipfile.ZipFile(path, "r") as archive:
-                self._safe_extract(archive, dest)
-        except Exception:
-            shutil.rmtree(dest, ignore_errors=True)
-            raise
-
-        return IngestionResult(job_id=job, local_path=dest)
+        return self._zip.ingest_path(zip_path, job_id=job_id)
 
     def ingest_zip_bytes(
         self,
         data: bytes,
         *,
         job_id: str | None = None,
-    ) -> IngestionResult:
+        name: str = "",
+    ) -> RepositoryHandle:
         """Extract zip bytes (e.g. from an HTTP upload) to a new job directory."""
-        job = job_id or str(uuid.uuid4())
-        dest = self._job_dir(job)
-        dest.mkdir(parents=True, exist_ok=False)
+        return self._zip.ingest_bytes(data, job_id=job_id, name=name)
 
-        try:
-            with zipfile.ZipFile(io.BytesIO(data), "r") as archive:
-                self._safe_extract(archive, dest)
-        except Exception:
-            shutil.rmtree(dest, ignore_errors=True)
-            raise
+    def ingest_github(
+        self,
+        github_url: str,
+        *,
+        job_id: str | None = None,
+    ) -> RepositoryHandle:
+        """Clone a public GitHub repository to a new job directory."""
+        return self._github.ingest(github_url, job_id=job_id)
 
-        return IngestionResult(job_id=job, local_path=dest)
-
-    def cleanup(self, job: IngestionResult | str) -> None:
-        """Remove the extracted job directory."""
-        job_id = job.job_id if isinstance(job, IngestionResult) else job
-        shutil.rmtree(self._job_dir(job_id), ignore_errors=True)
-
-    def _job_dir(self, job_id: str) -> Path:
-        return self._base_dir / job_id
-
-    @staticmethod
-    def _safe_extract(archive: zipfile.ZipFile, dest: Path) -> None:
-        """Extract members under ``dest``, rejecting zip-slip paths."""
-        dest_root = dest.resolve()
-        for member in archive.infolist():
-            # Skip directory entries; files create parent dirs on extract.
-            if member.is_dir():
-                continue
-            target = (dest_root / member.filename).resolve()
-            if not _is_within_directory(dest_root, target):
-                raise ValueError(f"Unsafe path in zip archive: {member.filename!r}")
-        archive.extractall(dest_root)
+    def cleanup(self, job: RepositoryHandle | str) -> None:
+        """Remove the on-disk job directory."""
+        job_id = job.job_id if isinstance(job, RepositoryHandle) else job
+        self._zip.cleanup(job_id)
+        self._github.cleanup(job_id)
 
 
-def _is_within_directory(root: Path, target: Path) -> bool:
-    """True if ``target`` is ``root`` or a path inside ``root``."""
-    try:
-        target.relative_to(root)
-        return True
-    except ValueError:
-        return False
+__all__ = [
+    "DEFAULT_BASE_DIR",
+    "IngestionResult",
+    "IngestionService",
+    "IngestionServiceProtocol",
+    "RepositoryHandle",
+]

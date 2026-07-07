@@ -26,9 +26,9 @@ Design notes:
   is ``"imports"`` today. ``inherits`` / ``calls`` wait on class/call resolution
   (see docs/learn.md — Why not type inherits yet).
 * **Deterministic ordering** — sorted file keys; scores already criticality-desc.
-* **Rounded floats** — pagerank, betweenness, and criticality are rounded to
-  four decimal places in JSON (``JSON_FLOAT_DECIMALS``); in-memory ``NodeScore``
-  values keep full precision for sorting and tests.
+* **Null fields omitted in JSON** — parser/graph dataclasses keep optional
+  fields (``ImportInfo.name``, ``FunctionInfo.parent_class``, …); export uses
+  the same field names and drops keys whose value is ``None``.
 
 Usage:
     data = pipeline_result_to_dict(result)
@@ -53,7 +53,6 @@ from app.parser.models import (
     FileAnalysis,
     FunctionInfo,
     ImportInfo,
-    format_import_display,
 )
 from app.pipeline.pipeline import PipelineResult
 
@@ -69,22 +68,25 @@ def round_json_float(value: float) -> float:
     return round(value, JSON_FLOAT_DECIMALS)
 
 
+def omit_none_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop keys whose values are ``None`` — parser models stay unchanged."""
+    return {key: value for key, value in payload.items() if value is not None}
+
+
 # --- Small field serializers (parser / graph models → plain dicts) ---
 
 
 def import_info_to_dict(item: ImportInfo) -> dict[str, Any]:
-    return {
-        "module": item.module,
-        "type": item.type,
-        "alias": item.alias,
-        "name": item.name,
-        "display": format_import_display(
-            import_type=item.type,
-            module=item.module,
-            alias=item.alias,
-            name=item.name,
-        ),
-    }
+    """Project ``ImportInfo`` to JSON — same field names, nulls omitted."""
+    return omit_none_fields(
+        {
+            "module": item.module,
+            "type": item.type,
+            "display": item.display,
+            "name": item.name,
+            "alias": item.alias,
+        }
+    )
 
 
 def class_info_to_dict(item: ClassInfo) -> dict[str, Any]:
@@ -96,10 +98,13 @@ def class_info_to_dict(item: ClassInfo) -> dict[str, Any]:
 
 
 def function_info_to_dict(item: FunctionInfo) -> dict[str, Any]:
-    return {
-        "name": item.name,
-        "parent_class": item.parent_class,
-    }
+    """Module-level functions omit ``parent_class``; methods always include it."""
+    return omit_none_fields(
+        {
+            "name": item.name,
+            "parent_class": item.parent_class,
+        }
+    )
 
 
 def file_analysis_to_dict(analysis: FileAnalysis) -> dict[str, Any]:

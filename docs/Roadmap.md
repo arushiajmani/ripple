@@ -128,15 +128,16 @@ Full property glossary: [learn.md — What each property means](./learn.md#1-wha
 
 ### Week 3 — Ingestion + End-to-End Integration
 
-**Goal:** Accept a zip file upload, run the full pipeline, produce a result JSON.
+**Goal:** Accept a zip file upload **or** a public GitHub URL, run the full pipeline, produce a result JSON.
 
 #### Tasks
 
-- [x] Implement `IngestionService` in `backend/app/ingestion/service.py`
+- [x] Implement `IngestionService` in `backend/app/ingestion/` (zip + GitHub modules)
 - [x] Accept zip file, extract to temp directory (`/tmp/ripple/{job_id}/`)
+- [x] Accept GitHub URL — validate, `git ls-remote`, shallow clone to same job-dir layout
 - [x] Walk directory tree, collect all `.py` files — via `parse_repository()` / `collect_python_files()`
 - [x] Filter out virtual environments (`venv/`, `.venv/`, `env/`), build artifacts (`__pycache__/`, `*.pyc`), test files (optional — include for now, filter later) — via `SKIP_DIRS` in `parser/models.py`
-- [x] Wire `IngestionService` → `AnalysisPipeline` in API layer — partial: call `ingest_zip` then `AnalysisPipeline.run(ingestion.local_path)` then `cleanup` (see learn.md)
+- [x] Wire `IngestionService` → `AnalysisPipeline` in API layer — `POST /api/analyze` accepts `file` or `github_url`
 - [x] Instrument every pipeline stage with timing: `file_discovery`, `ast_parsing` (total + per-file average), `import_resolution`, `graph_construction`, `pagerank_computation`, `betweenness_computation`, `score_normalization` — timings on `PipelineResult.metrics`
 - [x] Add benchmark CLI: `python -m app.benchmark --repo path/to/project` — runs the pipeline and prints a formatted timing breakdown to stdout (for performance testing on large repos)
 - [x] Output complete result as a JSON file — `python -m app.pipeline <repo> --json result.json`
@@ -147,10 +148,20 @@ Full property glossary: [learn.md — What each property means](./learn.md#1-wha
 
 ```bash
 # Automated ingestion tests
-cd backend && PYTHONPATH=. pytest tests/test_ingestion.py -v
+cd backend && source .venv/bin/activate
+PYTHONPATH=. pytest tests/test_ingestion.py -v          # zip (8)
+PYTHONPATH=. pytest tests/test_github_ingestion.py -v   # GitHub (17)
+PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP (11)
 
-# Manual: zip fixture → ingest → pipeline → JSON
+# Manual: local directory → pipeline → JSON
 python -m app.pipeline tests/fixtures/mini_repo --json result.json
+
+# Manual: API — zip or GitHub (server: uvicorn app.main:app --reload)
+curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -m json.tool
+
+curl -s -X POST http://localhost:8000/api/analyze \
+  -F "github_url=https://github.com/pypa/sampleproject" | python3 -m json.tool
 
 # Benchmark: per-stage timing breakdown
 python -m app.benchmark --repo tests/fixtures/mini_repo
@@ -199,7 +210,7 @@ Unresolvable imports (third-party packages like `import requests`) should be tra
 
 - [ ] Set up Alembic for database migrations
 - [ ] Implement all tables from the schema in the SRS (repositories, files, dependencies, node_scores, cycles)
-- [ ] Implement `POST /api/analyze` (full) — async 202, job record in PostgreSQL, background analysis *(sync zip upload wired in Week 3 — see `app/api/routes.py`)*
+- [ ] Implement `POST /api/analyze` (full) — async 202, job record in PostgreSQL, background analysis *(sync zip + GitHub wired in Week 3 — see `app/api/routes.py`)*
 - [ ] Implement `GET /api/status/{repo_id}` — returns current job status; includes `metrics` array (stage durations) once analysis is complete
 - [ ] Implement background task that runs `AnalysisPipeline` and writes results to PostgreSQL
 - [ ] Implement idempotency — same zip uploaded twice returns existing result (hash the file content)
@@ -220,7 +231,7 @@ Upload a zip via `curl` or Swagger UI. Poll status endpoint until `"complete"`. 
 - [ ] Implement `GET /api/repos` — returns list of all analyzed repos
 - [ ] Add proper HTTP error responses (404 for unknown repo_id, 422 for invalid inputs)
 - [ ] Add CORS configuration so React frontend can call the API
-- [ ] Write integration tests for all endpoints using FastAPI's `TestClient` *(partial: `tests/test_api.py` covers sync `POST /api/analyze`)*
+- [ ] Write integration tests for all endpoints using FastAPI's `TestClient` *(partial: `tests/test_api.py` covers sync `POST /api/analyze` — zip and GitHub, 11 cases)*
 
 #### Milestone Check
 
@@ -295,7 +306,7 @@ Full interaction flow works: click a node → sidebar updates → dependents hig
 
 #### Tasks
 
-- [ ] Build `HomePage` with zip file upload form and recent analyses list
+- [ ] Build `HomePage` with zip file upload form, GitHub URL input, and recent analyses list
 - [ ] Implement polling logic: after upload, poll `GET /api/status/{repo_id}` every 2 seconds until complete
 - [ ] Show progress indicator during analysis ("Parsing files... Building graph... Computing scores...")
 - [ ] Build `AnalysisPage` that loads when status becomes `"complete"`
@@ -369,4 +380,4 @@ Ask yourself these at the end of every week:
 
 ---
 
-*Roadmap version: 1.1 | Project: Ripple | Last updated: June 2026*
+*Roadmap version: 1.2 | Project: Ripple | Last updated: July 2026*

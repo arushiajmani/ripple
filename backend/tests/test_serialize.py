@@ -194,6 +194,57 @@ def test_files_optional() -> None:
     ]
 
 
+def test_import_serialization_omits_null_fields() -> None:
+    from app.parser.models import ImportInfo
+    from app.pipeline.serialize import import_info_to_dict
+
+    assert import_info_to_dict(ImportInfo(module="os", type="import")) == {
+        "module": "os",
+        "type": "import",
+        "display": "import os",
+    }
+    assert import_info_to_dict(
+        ImportInfo(module="collections", name="namedtuple", type="from_import")
+    ) == {
+        "module": "collections",
+        "type": "from_import",
+        "name": "namedtuple",
+        "display": "from collections import namedtuple",
+    }
+    assert import_info_to_dict(
+        ImportInfo(module="numpy", alias="np", type="import")
+    ) == {
+        "module": "numpy",
+        "type": "import",
+        "alias": "np",
+        "display": "import numpy as np",
+    }
+    assert import_info_to_dict(
+        ImportInfo(
+            module="decimal",
+            name="Decimal",
+            alias="D",
+            type="from_import",
+        )
+    ) == {
+        "module": "decimal",
+        "type": "from_import",
+        "name": "Decimal",
+        "alias": "D",
+        "display": "from decimal import Decimal as D",
+    }
+
+
+def test_function_serialization_omits_null_parent_class() -> None:
+    from app.parser.models import FunctionInfo
+    from app.pipeline.serialize import function_info_to_dict
+
+    assert function_info_to_dict(FunctionInfo(name="helper")) == {"name": "helper"}
+    assert function_info_to_dict(
+        FunctionInfo(name="__init__", parent_class="MockMain")
+    ) == {"name": "__init__", "parent_class": "MockMain"}
+
+
 def test_files_keep_full_file_analysis() -> None:
     auth = _dict()["files"]["myapp/auth.py"]
 
@@ -201,11 +252,27 @@ def test_files_keep_full_file_analysis() -> None:
     assert "myapp/models.py" in auth["resolved_deps"]
     assert "os" in auth["external_deps"]
     assert isinstance(auth["imports"], list)
-    assert auth["imports"][0]["display"] == "import os"
-    assert auth["imports"][1]["display"] == "import requests"
-    assert "classes" in auth
-    assert "functions" in auth
-    assert "methods" in auth
+    assert auth["imports"][0] == {
+        "module": "os",
+        "type": "import",
+        "display": "import os",
+    }
+    assert auth["imports"][1] == {
+        "module": "requests",
+        "type": "import",
+        "display": "import requests",
+    }
+    assert "name" not in auth["imports"][0]
+    assert "alias" not in auth["imports"][0]
+    assert auth["functions"]
+    assert "parent_class" not in auth["functions"][0]
+
+    models = _dict()["files"]["myapp/models.py"]
+    assert models["methods"][0] == {
+        "name": "__init__",
+        "parent_class": "User",
+    }
+    assert "parent_class" not in models["functions"][0] if models["functions"] else True
     assert "line_count" in auth
     assert "has_syntax_error" in auth
 
