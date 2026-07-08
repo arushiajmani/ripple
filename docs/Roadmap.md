@@ -1,6 +1,8 @@
 # Ripple — Project Roadmap
 
-> **Goal:** Build an interactive Python dependency analysis tool that surfaces architectural intelligence from source code using graph algorithms.
+> **Reorganized.** See [product/README.md](product/README.md) for the consolidated roadmap, requirements summary, and interview guide.
+
+*Archive below — full original week-by-week roadmap.*
 
 ---
 
@@ -212,9 +214,9 @@ Unresolvable imports (third-party packages like `import requests`) should be tra
 
 #### Tasks
 
-- [ ] Set up Alembic for database migrations
-- [ ] Implement all tables from the schema in the SRS (`repositories`, `analysis_jobs`, `files`, `dependencies`, `node_scores`, `cycles`, `cycle_members`, `analysis_statistics`)
-- [ ] Implement `POST /api/analyze` (full) — async 202, job record in PostgreSQL, background analysis *(sync zip + GitHub wired in Week 3 — see `app/api/routes.py`)*
+- [x] Set up Alembic for database migrations (`backend/alembic/`, `alembic.ini`, initial revision `63207e50c596_initial_schema`)
+- [x] Implement all tables from the schema in the SRS — SQLAlchemy ORM in `app/db/models.py` (`repositories`, `analysis_jobs`, `files`, `dependencies`, `node_scores`, `cycles`, `cycle_members`, `analysis_statistics`); schema unit tests in `tests/test_db_schema.py`
+- [ ] Implement `POST /api/analyze` (full) — async 202, job record in PostgreSQL, background analysis *(sync zip + GitHub wired in Week 3 — see `app/api/routes.py`; ORM + migration ready, write path not wired yet)*
 - [ ] Implement `GET /api/status/{repo_id}` — returns current job status; includes `metrics` array (stage durations) once analysis is complete
 - [ ] Implement background task that runs `AnalysisPipeline` and writes results to PostgreSQL
 - [ ] Implement idempotency — same zip uploaded twice returns existing result (hash the file content)
@@ -222,7 +224,36 @@ Unresolvable imports (third-party packages like `import requests`) should be tra
 
 #### Milestone Check
 
-Upload a zip via `curl` or Swagger UI. Poll status endpoint until `"complete"`. Verify results are stored in PostgreSQL by querying the database directly.
+**Schema (shipped):** from project root, with Postgres up:
+
+```bash
+# 1. Start database
+docker compose up -d db
+
+# 2. Apply migrations (backend venv)
+cd backend && source .venv/bin/activate
+alembic upgrade head
+
+# 3. Verify — list tables (9 total: 8 SRS + alembic_version)
+cd ..   # back to project root if needed
+docker compose exec db psql -U ripple -d ripple -c '\dt'
+
+# 4. Confirm migration revision
+docker compose exec db psql -U ripple -d ripple -c "SELECT * FROM alembic_version;"
+# Expected version_num: 63207e50c596
+```
+
+**Interactive inspection** (optional):
+
+```bash
+docker compose exec db psql -U ripple -d ripple
+```
+
+Then inside `psql`: `\dt`, `\d alembic_version`, `SELECT * FROM files;` (end SQL with `;`), `\q` to exit.
+
+If the prompt shows `ripple-#` instead of `ripple=#`, PostgreSQL is waiting for you to finish the previous statement — add the missing `;` or press **Ctrl+C**.
+
+**Async analyze (remaining):** Upload a zip via `curl` or Swagger UI. Poll status endpoint until `"complete"`. Verify results are stored in PostgreSQL by querying the database directly.
 
 ---
 
@@ -231,7 +262,7 @@ Upload a zip via `curl` or Swagger UI. Poll status endpoint until `"complete"`. 
 #### Tasks
 
 - [x] Implement `ImpactAnalyzer` in `backend/app/graph/algorithms/impact.py` — on-demand blast radius (direct + transitive dependents, hop-distance layers)
-- [x] Implement `AnalysisStore` — in-memory `PipelineResult` cache by `job_id` for on-demand queries (PostgreSQL planned)
+- [x] Implement `AnalysisStore` — in-memory `PipelineResult` cache by `job_id` for on-demand queries (PostgreSQL schema shipped; API still reads from in-memory store until write path lands)
 - [x] Implement `GET /api/impact/{repo_id}?file=path/to/file.py` — returns impact analysis ([SRS §8](./SRS_ProjectPlan.md#get-apiimpactrepo_id); `tests/algorithms/test_impact.py`, 8 cases; `tests/test_api.py`, 3 impact cases)
 - [ ] Implement `GET /api/graph/{repo_id}` — returns full graph JSON (nodes, edges, scores, cycles); optional `?top=N` to slice scores
 - [ ] Implement `GET /api/repos` — returns list of all analyzed repos

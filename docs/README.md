@@ -1,0 +1,65 @@
+# Ripple Documentation
+
+Ripple is a Python dependency analysis platform: parse repositories, build import graphs, score architectural criticality, and compute change impact.
+
+## Start here
+
+| I want to… | Go to |
+|------------|-------|
+| Run the project locally | [Getting started](getting-started/README.md) |
+| Understand a backend module | [Backend](backend/) |
+| See architecture decisions | [Architecture](architecture/README.md) |
+| Copy-paste commands | [CLI reference](development/cli-reference.md) |
+| Look up schemas or terms | [Reference](reference/) |
+| Walk through a real repo | [Examples](examples/) |
+| Roadmap, requirements, interviews | [Product](product/README.md) |
+
+## Backend modules
+
+| Doc | What it covers |
+|-----|----------------|
+| [Parser](backend/parser.md) | AST parsing, import resolution, `parse_repository` |
+| [Graph builder](backend/graph-builder.md) | `GraphBuilder`, `GraphAdapter`, cycles, scoring, impact |
+| [Pipeline](backend/pipeline.md) | `AnalysisPipeline`, JSON export, benchmark CLI |
+| [Ingestion](backend/ingestion.md) | Zip upload, GitHub clone, `IngestionService` |
+| [API](backend/api.md) | REST endpoints (`/api/analyze`, `/api/impact`) |
+| [Persistence](backend/persistence.md) | PostgreSQL schema, Alembic, `persist.py` |
+
+## Reference
+
+| Doc | What it covers |
+|-----|----------------|
+| [API schema](reference/api-schema.md) | Request/response shapes, status codes |
+| [JSON format](reference/json-format.md) | Pipeline export document layout |
+| [Database schema](reference/database-schema.md) | Tables, indexes, example queries |
+| [Glossary](reference/glossary.md) | Terms used across Ripple |
+| [Performance metrics](reference/performance-metrics.md) | Pipeline stages, benchmark output |
+
+## Examples
+
+| Repo | Notes |
+|------|-------|
+| [mini_repo](examples/mini_repo.md) | Built-in cyclic fixture — full walkthrough |
+| [click](examples/click.md) | Analyze pallets/click |
+| [django](examples/django.md) | Large-repo benchmark target |
+| [flask](examples/flask.md) | Medium-repo example |
+
+## Documentation lifecycle
+
+Every [backend module doc](backend/) starts with a standard header:
+
+- **Status** — Implemented, Partial, or Planned
+- **Owner** — Backend (frontend docs will use `frontend/` when added)
+- **Last Updated** — date of last substantive edit
+- **Related components**, **Tests**, **Source files**
+
+When you change a module, update its doc header date and the relevant reference pages.
+
+## Legacy paths
+
+Older single-file docs redirect here:
+
+- [learn.md](learn.md) — study guide (split into `backend/` + `architecture/`)
+- [Architecture.md](Architecture.md) — architecture (now `architecture/` + `reference/`)
+- [Roadmap.md](Roadmap.md) — now `product/README.md`
+- [SRS_ProjectPlan.md](SRS_ProjectPlan.md) — now `product/README.md` + `reference/`

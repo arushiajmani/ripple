@@ -1,6 +1,15 @@
 # Ripple — Architecture Document
 
-> This document explains every architectural decision made for Ripple: what was chosen, what was considered, and why. It is designed to prepare you to answer any architecture question in an interview.
+> **Reorganized.** Primary docs: [architecture/README.md](architecture/README.md) · [reference/](reference/) · [development/cli-reference.md](development/cli-reference.md)
+
+| Section | New doc |
+|---------|---------|
+| Architecture style, components | [architecture/README.md](architecture/README.md) |
+| API contracts | [reference/api-schema.md](reference/api-schema.md) |
+| CLI reference | [development/cli-reference.md](development/cli-reference.md) |
+| Database DDL | [reference/database-schema.md](reference/database-schema.md) |
+
+*Archive below — full original architecture document.*
 
 ---
 
@@ -64,12 +73,16 @@ ripple/
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt
+│   ├── alembic.ini             # Alembic config (URL overridden in env.py)
 │   ├── alembic/                # Database migrations
+│   │   ├── env.py              # Loads Base.metadata + DATABASE_URL
+│   │   ├── script.py.mako      # Template for new revisions
 │   │   └── versions/
+│   │       └── 63207e50c596_initial_schema.py  # All 8 SRS tables
 │   ├── app/
 │   │   ├── main.py             # FastAPI app entry point
 │   │   ├── config.py           # Environment variables, settings
-│   │   ├── database.py         # PostgreSQL connection, session
+│   │   ├── database.py         # Engine, SessionLocal, Base, get_db()
 │   │   │
 │   │   ├── ingestion/          # Component 1: File intake
 │   │   │   ├── __init__.py
@@ -113,9 +126,9 @@ ripple/
 │   │   │   ├── impact.py       # on-demand impact from stored artifacts
 │   │   │   └── deps.py         # FastAPI dependencies
 │   │   │
-│   │   └── db/                 # Component 6: Database models
+│   │   └── db/                 # Component 6: Database models (schema shipped)
 │   │       ├── __init__.py
-│   │       └── models.py       # SQLAlchemy ORM models
+│   │       └── models.py       # SQLAlchemy ORM — 8 SRS tables
 │   │
 │   └── tests/
 │       ├── test_parser.py       # ASTParser + parse_repository (11)
@@ -125,6 +138,7 @@ ripple/
 │       ├── test_ingestion.py    # zip extract (8)
 │       ├── test_github_ingestion.py  # GitHub clone (17)
 │       ├── test_api.py          # POST /api/analyze + GET /api/impact (14)
+│       ├── test_db_schema.py    # ORM metadata vs SCHEMA_TABLES (2)
 │       ├── algorithms/
 │       │   ├── test_cycles.py   # CycleDetector (8)
 │       │   ├── test_scoring.py  # AlgorithmEngine (13)
@@ -181,12 +195,13 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 | Ingestion (zip) | `tests/test_ingestion.py` | 8 | Zip extract, zip-slip, cleanup, pipeline |
 | Ingestion (GitHub) | `tests/test_github_ingestion.py` | 17 | URL validation, mocked clone, live integration |
 | API | `tests/test_api.py` | 14 | `POST /api/analyze` — zip, GitHub URL, errors, cleanup; `GET /api/impact` |
+| DB schema | `tests/test_db_schema.py` | 2 | ORM metadata registers all 8 SRS tables + key FKs / PKs |
 | Serialize | `tests/test_serialize.py` | 18 | JSON (metadata, repository, statistics, graph, …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `nx.DiGraph` only |
 | Scoring | `tests/algorithms/test_scoring.py` | 13 | `AlgorithmEngine` — PageRank, betweenness, criticality, warm-up |
 | Impact | `tests/algorithms/test_impact.py` | 8 | `ImpactAnalyzer` — layers, cycles, score lookup, metrics |
 
-**139 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
+**141 tests total.** Run from `backend/`: `pytest tests/ -v` (`pythonpath = .` in `pytest.ini`).
 
 - **CLI commands (all tools + tests):** [§12 CLI Reference](#12-cli-reference)
 - **Quick commands:** [README — Tests](../README.md#tests)
@@ -428,10 +443,12 @@ networkx.DiGraph          shared by all graph algorithms (built once per run)
     ↓
 PipelineResult            analyses + graph + cycles + scores
     ↓
-AnalysisStore             in-memory cache by job_id (on-demand queries)
-    ↓
+AnalysisStore             in-memory cache by job_id (on-demand queries)  ← shipped today
+    ↓                       Postgres write path planned → files, dependencies, node_scores, …
 ImpactAnalyzer            ImpactAnalysisResult (per-file, not a batch stage)
 ```
+
+**Today:** upload → pipeline → JSON response + `AnalysisStore`. **Next:** same pipeline, then persist `PipelineResult` to Postgres and return `job_id` for polling. Detail: [learn.md — Right now vs after persistence](./learn.md#right-now-vs-after-persistence).
 
 `AnalysisPipeline` wires RepositoryParser → GraphBuilder → GraphAdapter → CycleDetector + AlgorithmEngine and returns `PipelineResult(analyses, graph, cycles, scores)`.
 
@@ -454,7 +471,7 @@ ImpactAnalyzer            ImpactAnalysisResult (per-file, not a batch stage)
 6. **`GraphAdapter` is the single NetworkX conversion point** — Ripple owns `GraphResult`; NetworkX is an implementation detail. The adapter converts once per pipeline run; all algorithms share the same `DiGraph`. Conversion only — no algorithm logic in the adapter.
 7. **`CycleDetector` is a separate algorithm unit** — takes `nx.DiGraph`, uses NetworkX `simple_cycles`, normalizes rotations, returns `CircularDependencyResult`. Wired into `AnalysisPipeline` as `PipelineResult.cycles`; unit-tested in isolation (`tests/algorithms/test_cycles.py`, 8 cases). Detail: [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection).
 8. **`AlgorithmEngine` scores criticality** — takes the shared `nx.DiGraph`; PageRank = how depended-on (importance flows importer→imported); betweenness = bridge/bottleneck; criticality = `0.6 * norm(PR) + 0.4 * norm(BT)` relative change-risk; in/out degree = direct importers / imports. One untimed PageRank warm-up runs before the measured stage to exclude one-time SciPy/NetworkX backend initialization from benchmark timings. Wired as `PipelineResult.scores`; CLI prints top 10. Tests: `tests/algorithms/test_scoring.py` (13). Glossary: [learn.md — What each property means](./learn.md#1-what-each-property-means).
-9. **`ImpactAnalyzer` answers "what breaks if I change file F?"** — on-demand query, not a batch pipeline stage. Takes the shared `nx.DiGraph` plus optional `ScoringResult`; walks **predecessors** (reverse reachability: importer → imported, so dependents = who imports F). Uses `predecessors`, `ancestors`, and `single_source_shortest_path_length` on the reversed graph for hop-distance **layers** (each file in exactly one layer). Reuses existing `NodeScore` for the target — does not recompute criticality. Wired via `AnalysisStore` + `GET /api/impact/{repo_id}?file=...`. Temp dirs still cleaned after analyze; only in-memory `PipelineResult` is retained until process restart or PostgreSQL (planned). Tests: `tests/algorithms/test_impact.py` (8). Detail: [learn.md — Impact Analysis](./learn.md#phase-1-week-2--impact-analysis).
+9. **`ImpactAnalyzer` answers "what breaks if I change file F?"** — on-demand query, not a batch pipeline stage. Takes the shared `nx.DiGraph` plus optional `ScoringResult`; walks **predecessors** (reverse reachability: importer → imported, so dependents = who imports F). Uses `predecessors`, `ancestors`, and `single_source_shortest_path_length` on the reversed graph for hop-distance **layers** (each file in exactly one layer). Reuses existing `NodeScore` for the target — does not recompute criticality. Wired via `AnalysisStore` + `GET /api/impact/{repo_id}?file=...`. Temp dirs still cleaned after analyze; only in-memory `PipelineResult` is retained until process restart or the Postgres write path (schema shipped). Tests: `tests/algorithms/test_impact.py` (8). Detail: [learn.md — Impact Analysis](./learn.md#phase-1-week-2--impact-analysis).
 
 ### Future scope
 
@@ -507,7 +524,24 @@ class GraphResult:
 
 Top critical files: use `ScoringResult.top(n)` in Python or `analysis.scores.slice(0, n)` in JSON clients — not a separate field.
 
-### PostgreSQL Schema (planned)
+### PostgreSQL Schema (implemented)
+
+ORM: `backend/app/db/models.py`. Migrations: `backend/alembic/` (initial revision `63207e50c596_initial_schema`). Config: `app/config.py` (`DATABASE_URL`) + `app/database.py` (`Base`, `get_db`).
+
+**Status:** Tables and indexes are defined and migratable. Pipeline results are **not** written to Postgres yet — `AnalysisStore` remains in-memory until the async analyze path lands.
+
+#### Memory today → rows tomorrow
+
+| `PipelineResult` field | Table(s) |
+|------------------------|----------|
+| `graph.nodes` + `analyses` | `files` |
+| `graph.edges` | `dependencies` |
+| `scores` | `node_scores` (`composite_score` = API `criticality`) |
+| `cycles` | `cycles`, `cycle_members` |
+| summary / counts | `analysis_statistics` |
+| repo identity | `repositories`, `analysis_jobs` |
+
+See [learn.md — Right now vs after persistence](./learn.md#right-now-vs-after-persistence) for flow diagrams.
 
 See [SRS — Database Schema](./SRS_ProjectPlan.md#7-database-schema) for full rationale. Summary:
 
@@ -611,13 +645,26 @@ CREATE INDEX idx_cycle_members_file ON cycle_members(file_id);
 CREATE INDEX idx_node_scores_composite ON node_scores(composite_score DESC);
 ```
 
+Apply from `backend/` (Postgres must be running): `alembic upgrade head`. Source of truth for the shipped SQL is `alembic/versions/63207e50c596_initial_schema.py` (autogenerated from `app/db/models.py`).
+
+**Quick verify** (project root):
+
+```bash
+docker compose up -d db
+cd backend && source .venv/bin/activate && alembic upgrade head
+docker compose exec db psql -U ripple -d ripple -c '\dt'
+docker compose exec db psql -U ripple -d ripple -c "SELECT * FROM alembic_version;"
+```
+
+See [§12 — Database operations](#database-operations) for interactive `psql`, prompts, and troubleshooting.
+
 ---
 
 ## 6. API Contract
 
 ### POST /api/analyze
 
-Accepts **either** a zip file upload **or** a public GitHub URL and runs analysis synchronously (no DB or background jobs yet).
+Accepts **either** a zip file upload **or** a public GitHub URL and runs analysis synchronously (schema exists; results still go to in-memory `AnalysisStore`, not Postgres yet).
 
 ```
 Request (zip):  multipart/form-data
@@ -755,7 +802,7 @@ Response 200:
 
 ### GET /api/impact/{repo_id}
 
-On-demand blast-radius for one file in a **previously analyzed** repository. Uses in-memory `AnalysisStore` keyed by `job_id` from `POST /api/analyze` (PostgreSQL persistence planned). Does not re-parse source or rebuild the graph.
+On-demand blast-radius for one file in a **previously analyzed** repository. Uses in-memory `AnalysisStore` keyed by `job_id` from `POST /api/analyze` (Postgres schema shipped; persistence write path planned). Does not re-parse source or rebuild the graph.
 
 Full field reference: [SRS §8 — GET /api/impact/{repo_id}](./SRS_ProjectPlan.md#get-apiimpactrepo_id).
 
@@ -1028,7 +1075,7 @@ Complete trace from zip upload or GitHub URL to graph appearing on screen.
          │
          ▼
 17. FastAPI:
-    - Load PipelineResult from AnalysisStore (PostgreSQL planned)
+    - Load PipelineResult from AnalysisStore (Postgres write path planned)
     - GraphAdapter → nx.DiGraph (reuse stored graph + scores)
     - ImpactAnalyzer.analyze(digraph, file, scores=result.scores)
     - Return impact result (target, direct/indirect dependents, labeled layers, summary)
@@ -1155,11 +1202,16 @@ One table for every way to run something with **your own input** (repo path, fil
 | Zip → extract → analyze | zip file | `curl -F file=@…zip …/api/analyze` or pytest — see [Ingestion](#ingestion-zip-and-github) | extract, then pipeline |
 | GitHub → clone → analyze | public repo URL | `curl -F github_url=https://github.com/owner/repo …/api/analyze` | clone, then pipeline |
 | Impact for one file | `job_id` + file path | `curl "…/api/impact/{job_id}?file=path/to/file.py"` | on-demand blast radius (after analyze) |
-| Impact unit tests | (synthetic graphs) | `PYTHONPATH=. pytest tests/algorithms/test_impact.py -v` | layers, cycles, score lookup |
-| Zip ingestion tests | (pytest builds zips) | `PYTHONPATH=. pytest tests/test_ingestion.py -v` | extract, zip-slip, cleanup |
-| GitHub ingestion tests | (mocked + 1 live clone) | `PYTHONPATH=. pytest tests/test_github_ingestion.py -v` | URL parse, clone, cleanup |
-| API tests | zip + GitHub + impact | `PYTHONPATH=. pytest tests/test_api.py -v` | HTTP → pipeline → cleanup; impact endpoint |
-| Run automated tests | (pytest fixtures) | `PYTHONPATH=. pytest tests/ -v` | Varies by test file |
+| Apply DB migrations | (Postgres running) | `alembic upgrade head` | create/upgrade all SRS tables |
+| List DB tables | (Postgres running) | `docker compose exec db psql -U ripple -d ripple -c '\dt'` | 9 tables (8 SRS + `alembic_version`) |
+| Check migration revision | (Postgres running) | `docker compose exec db psql -U ripple -d ripple -c "SELECT * FROM alembic_version;"` | should show `63207e50c596` |
+| Interactive psql | (Postgres running) | `docker compose exec db psql -U ripple -d ripple` | `\dt`, `\d table`, SQL + `;`, `\q` |
+| Schema unit tests | (no live DB) | `pytest tests/test_db_schema.py -v` | ORM metadata vs SRS table list |
+| Impact unit tests | (synthetic graphs) | `pytest tests/algorithms/test_impact.py -v` | layers, cycles, score lookup |
+| Zip ingestion tests | (pytest builds zips) | `pytest tests/test_ingestion.py -v` | extract, zip-slip, cleanup |
+| GitHub ingestion tests | (mocked + 1 live clone) | `pytest tests/test_github_ingestion.py -v` | URL parse, clone, cleanup |
+| API tests | zip + GitHub + impact | `pytest tests/test_api.py -v` | HTTP → pipeline → cleanup; impact endpoint |
+| Run automated tests | (pytest fixtures) | `pytest tests/ -v` | Varies by test file |
 
 **Examples with the built-in fixture** (swap `tests/fixtures/mini_repo` for your repo):
 
@@ -1362,6 +1414,12 @@ curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.
 |---------|-------|--------------|
 | `uvicorn app.main:app --reload` | `backend/` | FastAPI dev server on port 8000 |
 | `docker compose up --build` | project root | Start frontend, backend, PostgreSQL |
+| `docker compose up -d db` | project root | Start PostgreSQL only |
+| `alembic upgrade head` | `backend/` | Apply pending migrations (needs `DATABASE_URL`) |
+| `alembic revision --autogenerate -m "…"` | `backend/` | Diff ORM models → new migration file |
+| `docker compose exec db psql -U ripple -d ripple` | project root | Interactive Postgres shell |
+| `docker compose exec db psql … -c '\dt'` | project root | List tables without entering psql |
+| `docker compose exec db psql … -c "SELECT …;"` | project root | Run one SQL statement from bash |
 
 **Full commands:**
 
@@ -1378,21 +1436,82 @@ docker compose up --build
 # Frontend http://localhost:5173  ·  Backend http://localhost:8000
 ```
 
+```bash
+# Database — schema only (from project root)
+docker compose up -d db
+cd backend && source .venv/bin/activate
+alembic upgrade head
+
+# Verify (from project root)
+docker compose exec db psql -U ripple -d ripple -c '\dt'
+docker compose exec db psql -U ripple -d ripple -c "SELECT * FROM alembic_version;"
+```
+
+### Database operations
+
+Ripple's Postgres container uses user/database `ripple` / `ripple` (see `docker-compose.yml`). Default URL for local Alembic: `postgresql://ripple:ripple@localhost:5432/ripple`.
+
+#### Apply migrations
+
+```bash
+docker compose up -d db
+cd backend && source .venv/bin/activate
+alembic upgrade head
+```
+
+#### Inspect schema (one-liners from project root)
+
+```bash
+docker compose exec db psql -U ripple -d ripple -c '\dt'
+docker compose exec db psql -U ripple -d ripple -c '\d alembic_version'
+docker compose exec db psql -U ripple -d ripple -c "SELECT * FROM alembic_version;"
+docker compose exec db psql -U ripple -d ripple -c "SELECT COUNT(*) FROM repositories;"
+```
+
+#### Interactive `psql`
+
+```bash
+docker compose exec db psql -U ripple -d ripple
+```
+
+| Command | Purpose |
+|---------|---------|
+| `\dt` | List tables |
+| `\d tablename` | Describe columns and indexes (e.g. `\d alembic_version`) |
+| `\q` | Quit |
+| `SELECT * FROM files;` | Run SQL — **must end with `;`** |
+
+#### Prompts and troubleshooting
+
+| Prompt | Meaning |
+|--------|---------|
+| `ripple=#` | Ready for input |
+| `ripple-#` | Continuation — previous statement not terminated. Type `;` + Enter, or **Ctrl+C** to cancel |
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `bash: SELECT: command not found` | Ran SQL in bash, not in `psql` | Use `docker compose exec db psql …` or open interactive `psql` first |
+| `ripple-#` stuck | Forgot semicolon on previous line | `;` + Enter, or Ctrl+C |
+| `alembic` can't connect | Postgres not running | `docker compose up -d db` |
+| Empty data tables | Expected today | Schema only — API still uses in-memory `AnalysisStore` |
+
+After a successful `alembic upgrade head`, expect **9 tables**: the 8 SRS tables plus `alembic_version` with `version_num = 63207e50c596`.
+
 ---
 
 ### Automated tests (pytest)
 
-Run from `backend/` with `PYTHONPATH=.` so the `app` package resolves. Integration tests use **in-repo fixtures** (`tests/fixtures/mini_repo/`) and **temp directories** created by pytest — you do not pass paths on the CLI for those.
+Run from `backend/` with `pytest` (`pythonpath = .` in `pytest.ini`). Integration tests use **in-repo fixtures** (`tests/fixtures/mini_repo/`) and **temp directories** created by pytest — you do not pass paths on the CLI for those.
 
 #### Run the full suite
 
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v
+pytest tests/ -v
 ```
 
-Runs all **139** tests. `-v` prints one line per test (`PASSED` / `FAILED`).
+Runs all **141** tests. `-v` prints one line per test (`PASSED` / `FAILED`).
 
 #### Run one suite (full commands)
 
@@ -1400,18 +1519,19 @@ Runs all **139** tests. `-v` prints one line per test (`PASSED` / `FAILED`).
 cd backend
 source .venv/bin/activate
 
-PYTHONPATH=. pytest tests/test_parser.py -v       # parser (11)
-PYTHONPATH=. pytest tests/test_graph.py -v       # GraphBuilder (9)
-PYTHONPATH=. pytest tests/test_adapter.py -v     # GraphAdapter (4)
-PYTHONPATH=. pytest tests/test_pipeline.py -v    # AnalysisPipeline on temp repos + mini_repo (9)
-PYTHONPATH=. pytest tests/test_ingestion.py -v   # zip extract + pipeline (8)
-PYTHONPATH=. pytest tests/test_benchmark.py -v   # stage metrics + benchmark notes (16)
-PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export shape (18)
-PYTHONPATH=. pytest tests/algorithms/test_cycles.py -v    # CycleDetector (8)
-PYTHONPATH=. pytest tests/algorithms/test_scoring.py -v    # AlgorithmEngine (13)
-PYTHONPATH=. pytest tests/algorithms/test_impact.py -v     # ImpactAnalyzer (8)
-PYTHONPATH=. pytest tests/algorithms/ -v         # cycles + scoring + impact (29)
-PYTHONPATH=. pytest tests/test_api.py -v         # analyze + impact API (14)
+pytest tests/test_parser.py -v       # parser (15)
+pytest tests/test_graph.py -v       # GraphBuilder (9)
+pytest tests/test_adapter.py -v     # GraphAdapter (4)
+pytest tests/test_pipeline.py -v    # AnalysisPipeline on temp repos + mini_repo (9)
+pytest tests/test_ingestion.py -v   # zip extract + pipeline (8)
+pytest tests/test_benchmark.py -v   # stage metrics + benchmark notes (16)
+pytest tests/test_serialize.py -v   # JSON export shape (18)
+pytest tests/test_db_schema.py -v   # ORM schema metadata (2)
+pytest tests/algorithms/test_cycles.py -v    # CycleDetector (8)
+pytest tests/algorithms/test_scoring.py -v    # AlgorithmEngine (13)
+pytest tests/algorithms/test_impact.py -v     # ImpactAnalyzer (8)
+pytest tests/algorithms/ -v         # cycles + scoring + impact (29)
+pytest tests/test_api.py -v         # analyze + impact API (14)
 ```
 
 See [Command sheet](#command-sheet-all-inputs) for which pytest file maps to which capability. Zip-specific tests are **only** in `test_ingestion.py` (no zip CLI exists yet).
@@ -1475,4 +1595,4 @@ PYTHONPATH=. pytest tests/test_ingestion.py tests/test_github_ingestion.py -v
 
 ---
 
-*Architecture version: 1.2 | Project: Ripple | Stack: Python · FastAPI · PostgreSQL · NetworkX · React · Cytoscape.js · Docker*
+*Architecture version: 1.4 | Project: Ripple | Stack: Python · FastAPI · PostgreSQL · NetworkX · React · Cytoscape.js · Docker*

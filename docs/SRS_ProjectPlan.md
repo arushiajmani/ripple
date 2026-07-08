@@ -1,6 +1,8 @@
 # Ripple — Software Requirements Specification & Project Plan
 
-> **One-line pitch:** Paste a GitHub URL, instantly see which Python files matter most and what breaks if you touch them.
+> **Reorganized.** See [product/README.md](product/README.md), [reference/](reference/), and [backend/](backend/).
+
+*Archive below — full original SRS.*
 
 ---
 
@@ -444,7 +446,35 @@ The right answer to "why not Neo4j?" is: "I evaluated it, but since I'm using Ne
 
 **Note:** Shipped JSON export still uses `criticality` in `analysis.scores` (in-memory `NodeScore`). The database column is `composite_score` — same weighted formula (`0.6 * norm(PR) + 0.4 * norm(BT)`), neutral name for storage.
 
-### Schema (planned)
+### Schema (implemented)
+
+ORM models: `backend/app/db/models.py`. Migrations: `backend/alembic/` (initial revision creates all tables below). **Writing pipeline results into these tables is still planned** — the API currently uses in-memory `AnalysisStore`.
+
+**Apply and verify** (from project root):
+
+```bash
+docker compose up -d db
+cd backend && source .venv/bin/activate && alembic upgrade head
+cd ..
+docker compose exec db psql -U ripple -d ripple -c '\dt'
+docker compose exec db psql -U ripple -d ripple -c "SELECT * FROM alembic_version;"
+```
+
+Interactive: `docker compose exec db psql -U ripple -d ripple` → `\dt`, `\d alembic_version`, SQL ending with `;`, `\q` to quit. Prompt `ripple-#` means a statement is unfinished (missing `;`).
+
+#### Persistence flow (planned)
+
+**Today:** `POST /api/analyze` runs the pipeline synchronously and returns full JSON. `AnalysisStore` keeps `PipelineResult` in memory by `job_id` until server restart. Postgres schema exists; tables are empty.
+
+**Next:** same `AnalysisPipeline.run()` → write `PipelineResult` into the tables below → return `job_id` / poll status. See [learn.md — Right now vs after persistence](./learn.md#right-now-vs-after-persistence).
+
+| `PipelineResult` | PostgreSQL |
+|------------------|------------|
+| `graph.nodes`, `analyses` | `files` |
+| `graph.edges` | `dependencies` |
+| `scores` | `node_scores` |
+| `cycles` | `cycles`, `cycle_members` |
+| counts / density | `analysis_statistics` |
 
 ```sql
 -- Logical repository (GitHub or zip upload)
@@ -636,7 +666,7 @@ Flow: ingest → `AnalysisPipeline.run(local_path)` → `AnalysisStore.save(job_
 
 ##### GET /api/impact/{repo_id}
 
-Uses in-memory `AnalysisStore` keyed by `job_id` from `POST /api/analyze`. Does **not** re-parse source or rebuild the graph. Temp extract/clone dirs are already cleaned; only `PipelineResult` artifacts (graph + scores) remain until server restart (PostgreSQL persistence planned).
+Uses in-memory `AnalysisStore` keyed by `job_id` from `POST /api/analyze`. Does **not** re-parse source or rebuild the graph. Temp extract/clone dirs are already cleaned; only `PipelineResult` artifacts (graph + scores) remain until server restart (Postgres schema shipped; write path planned).
 
 ```
 Path params:
@@ -860,7 +890,7 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 
 ### Verification (how to test requirements)
 
-Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**139 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests) · Full CLI reference: [Architecture §12](./Architecture.md#12-cli-reference).
+Run all backend tests from `backend/`: `pytest tests/ -v` (**141 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests) · Full CLI reference: [Architecture §12](./Architecture.md#12-cli-reference).
 
 
 | Requirement                            | Status          | Verified by                                                                     |
@@ -940,7 +970,7 @@ Run all backend tests from `backend/`: `PYTHONPATH=. pytest tests/ -v` (**139 te
 - [x] Implement `POST /api/analyze` (partial) — sync zip or GitHub URL, returns full analysis JSON (`tests/test_api.py`)
 - [x] Implement `ImpactAnalyzer` — on-demand blast radius (`graph/algorithms/impact.py`, `tests/algorithms/test_impact.py`, 8 cases)
 - [x] Implement `GET /api/impact/{repo_id}?file=...` — returns impact analysis from stored `PipelineResult` (`tests/test_api.py`, 3 impact cases)
-- [ ] Implement PostgreSQL schema (migrations via Alembic)
+- [x] Implement PostgreSQL schema (migrations via Alembic) — `app/db/models.py`, `alembic/versions/63207e50c596_initial_schema.py`, `tests/test_db_schema.py`
 - [ ] Implement `POST /api/analyze` (full) — async 202, job record in DB, background analysis
 - [ ] Implement `GET /api/status/{repo_id}` — returns job status and `metrics[]` when complete
 - [ ] Milestone: Can submit a zip via curl, poll status until complete, stage timings in status response
@@ -1042,4 +1072,4 @@ These are the questions you should be able to answer confidently after building 
 
 ---
 
-*Document version: 1.1 | Project: Ripple | Stack: Python · FastAPI · PostgreSQL · NetworkX · React · Cytoscape.js · Docker*
+*Document version: 1.2 | Project: Ripple | Stack: Python · FastAPI · PostgreSQL · NetworkX · React · Cytoscape.js · Docker*

@@ -1,9 +1,15 @@
 # Ripple — Code Study Guide
 
-> Read this to understand **what the code does, why it's shaped this way, and how data flows through it.**
-> One section per shipped component. Future phases are listed so you know what's coming.
+> **Reorganized.** Primary docs: [README.md](README.md) · [backend/](backend/) · [architecture/](architecture/) · [development/](development/) · [reference/](reference/) · [examples/](examples/)
 
-*Last updated: 2026-06-26*
+| Topic | New doc |
+|-------|---------|
+| Parser | [backend/parser.md](backend/parser.md) |
+| Graph / cycles / scoring / impact | [backend/graph-builder.md](backend/graph-builder.md) |
+| Pipeline / benchmark | [backend/pipeline.md](backend/pipeline.md) |
+| Commands | [development/cli-reference.md](development/cli-reference.md) |
+
+*The archive below retains the full original study guide until all sections are verified ported.*
 
 ---
 
@@ -26,12 +32,15 @@
 - [Phase 1 — Ingestion (zip + GitHub)](#phase-1--ingestion-zip--github)
 - [Phase 1 — Benchmark CLI](#phase-1--benchmark-cli)
 - [Phase 1 — Analysis Pipeline](#phase-1--analysis-pipeline)
+- [Phase 2, Week 4 — PostgreSQL Schema](#phase-2-week-4--postgresql-schema)
+  - [Right now vs after persistence](#right-now-vs-after-persistence)
 
 ### Testing & commands
 
 - [Introduction to pytest](#introduction-to-pytest)
 - [Testing overview](#testing-overview)
-- [Command sheet (all inputs)](Architecture.md#command-sheet-all-inputs) — parser, pipeline, benchmark, zip, GitHub, pytest
+- [Command sheet (all inputs)](Architecture.md#command-sheet-all-inputs) — parser, pipeline, benchmark, zip, GitHub, pytest, **database**
+- [Database operations](Architecture.md#database-operations) — `alembic`, `psql`, prompts, troubleshooting
 
 ---
 
@@ -83,6 +92,19 @@
 | Wire `AlgorithmEngine` into pipeline | Yes |
 | `ImpactAnalyzer` + `GET /api/impact/{repo_id}` | Yes |
 
+### Checklist (database)
+
+| Task | Done? |
+|------|-------|
+| `app/config.py` — `DATABASE_URL` from env | Yes |
+| `app/database.py` — engine, `SessionLocal`, `Base`, `get_db()` | Yes |
+| `app/db/models.py` — all 8 SRS tables as SQLAlchemy ORM | Yes |
+| Alembic setup (`alembic.ini`, `alembic/env.py`) | Yes |
+| Initial migration `63207e50c596_initial_schema` | Yes |
+| Schema unit tests (`tests/test_db_schema.py`) | Yes (2 cases) |
+| Write `PipelineResult` into Postgres from API | Yes (sync `POST /api/analyze`) |
+| Async `POST /api/analyze` (202 + poll) | No |
+
 ---
 
 ## Big picture
@@ -117,7 +139,7 @@ AnalysisStore + ImpactAnalyzer  ←  on-demand ImpactAnalysisResult (not batch)
 PostgreSQL / JSON / API / React
 ```
 
-**Shipped today:** Parser, `GraphBuilder`, `CycleDetector`, `AlgorithmEngine`, `ImpactAnalyzer`, `AnalysisPipeline` (parse → graph → cycles → scores), `IngestionService` (zip + GitHub), pipeline stage metrics, benchmark CLI, partial REST API (`POST /api/analyze` — sync zip or GitHub URL; `GET /api/impact/{repo_id}?file=...` — on-demand impact). PostgreSQL and async jobs are planned.
+**Shipped today:** Parser, `GraphBuilder`, `CycleDetector`, `AlgorithmEngine`, `ImpactAnalyzer`, `AnalysisPipeline` (parse → graph → cycles → scores), `IngestionService` (zip + GitHub), pipeline stage metrics, benchmark CLI, partial REST API (`POST /api/analyze` — sync zip or GitHub URL; `GET /api/impact/{repo_id}?file=...` — on-demand impact), PostgreSQL schema (Alembic + SQLAlchemy ORM for all 8 SRS tables). Async jobs and writing pipeline results to Postgres are still planned — the API uses in-memory `AnalysisStore`.
 
 `FileAnalysis` is intended to remain the **canonical source of parsed code information** for all current and future graph builders. Parse once; build many graph views from the same `dict[str, FileAnalysis]`.
 
@@ -128,6 +150,7 @@ PostgreSQL / JSON / API / React
 | **Parser** | `ASTParser`, `FileAnalysis`, RepositoryParser (`parse_repository`) | Read source, walk AST, resolve imports, emit structured facts per file |
 | **Graph** | `GraphBuilder`, `GraphResult`, `CycleDetector`, `AlgorithmEngine`, `ImpactAnalyzer` | Import graph, cycles, criticality scores, on-demand impact |
 | **Pipeline** | `AnalysisPipeline`, `PipelineResult` | Orchestrate parse → graph → cycles → scores |
+| **DB** | SQLAlchemy models, Alembic | Persist schema (8 tables); write path for jobs still planned |
 
 ---
 
@@ -321,7 +344,9 @@ What exists and where:
 |-------|----------|---------|
 | FastAPI app | `backend/app/main.py` | `GET /health` → `{"status": "ok"}` |
 | Docker stack | `docker-compose.yml` | `backend`, `db` (Postgres), `frontend` |
-| Python deps | `backend/requirements.txt` | FastAPI, SQLAlchemy, NetworkX, pytest, … |
+| Python deps | `backend/requirements.txt` | FastAPI, SQLAlchemy, Alembic, NetworkX, pytest, … |
+| DB config | `backend/app/config.py` | `DATABASE_URL` from env |
+| DB schema | `backend/app/db/models.py` + `alembic/` | ORM + migrations (`alembic upgrade head`) |
 | React shell | `frontend/` | Vite + React (minimal) |
 
 Local backend dev (no Docker):
@@ -330,6 +355,14 @@ Local backend dev (no Docker):
 cd backend
 source .venv/bin/activate
 uvicorn app.main:app --reload
+```
+
+Postgres + schema (from project root):
+
+```bash
+docker compose up -d db
+cd backend && source .venv/bin/activate && alembic upgrade head
+docker compose exec db psql -U ripple -d ripple -c '\dt'
 ```
 
 ---
@@ -1221,7 +1254,7 @@ PYTHONPATH=. pytest tests/algorithms/test_scoring.py -v
 4. `backend/app/api/impact.py` — `analyze_file_impact_from_result`
 5. `backend/tests/algorithms/test_impact.py` — 8 unit tests
 
-**Status:** Implemented and unit-tested. **Not** wired into `AnalysisPipeline` as a batch stage — invoked on demand via `GET /api/impact/{repo_id}?file=...` against stored pipeline artifacts. Temp ingest dirs are still cleaned after analyze; only in-memory results are kept until PostgreSQL (planned).
+**Status:** Implemented and unit-tested. **Not** wired into `AnalysisPipeline` as a batch stage — invoked on demand via `GET /api/impact/{repo_id}?file=...` against stored pipeline artifacts. Temp ingest dirs are still cleaned after analyze; only in-memory results are kept until the Postgres write path lands (schema/migrations already shipped).
 
 ### 1. What each property means
 
@@ -1775,6 +1808,303 @@ Score field meanings: [What each property means](#1-what-each-property-means).
 
 ---
 
+## Phase 2, Week 4 — PostgreSQL Schema
+
+**Goal:** Define the persistent data model from [SRS §7](./SRS_ProjectPlan.md#7-database-schema) and ship it via Alembic migrations. **Shipped:** `POST /api/analyze` writes `PipelineResult` to Postgres via `app/db/persist.py`; `GET /api/impact` loads from memory or DB via `app/db/load.py`. **Not yet:** async 202 + status polling.
+
+### Right now vs after persistence
+
+#### Right now (sync API, in-memory)
+
+```
+Upload ZIP or GitHub URL
+        │
+        ▼
+   IngestionService  (extract / clone → temp dir)
+        │
+        ▼
+   AnalysisPipeline
+        │
+        ▼
+   PipelineResult  (Python object: analyses, graph, cycles, scores)
+        │
+        ├──► AnalysisStore.save(job_id, result)   ← in-memory dict
+        │
+        ▼
+   Return full JSON (200 OK)
+        │
+        ▼
+   cleanup()  (temp extract/clone dir removed)
+```
+
+Everything important lives **in process memory**:
+
+- The HTTP response returns the full analysis JSON immediately.
+- `AnalysisStore` also keeps the `PipelineResult` keyed by `job_id` so `GET /api/impact/{job_id}?file=...` can run later **without re-parsing**.
+- **Restart the server** → `AnalysisStore` is empty. Postgres tables exist but have **no rows** yet.
+
+#### After persistence (planned)
+
+```
+Upload ZIP or GitHub URL
+        │
+        ▼
+   Create repository + analysis_job rows  (status: pending)
+        │
+        ▼
+   Return 202 Accepted  { job_id, status: "processing" }
+        │
+        ▼   (background task)
+   AnalysisPipeline → PipelineResult
+        │
+        ▼
+   Save into PostgreSQL  (files, dependencies, node_scores, cycles, …)
+        │
+        ▼
+   Update analysis_jobs  (status: complete, duration_ms, …)
+        │
+        ▼
+   Client polls GET /api/status/{job_id}
+```
+
+Instead of throwing away results on restart, you **convert `PipelineResult` into database rows**. The pipeline code stays the same — you add a persistence layer after `run()`.
+
+#### `PipelineResult` → table mapping
+
+You're not changing the analysis engine. You're serializing its output:
+
+| In memory today | PostgreSQL table | Notes |
+|-----------------|------------------|-------|
+| `result.graph.nodes` (file paths) | `files` | `file_path`, `job_id`; UUID `id` per row |
+| `result.analyses[path]` metadata | `files` | `line_count`, `syntax_error`, `sha256` |
+| `result.graph.edges` (source → target paths) | `dependencies` | `source_file_id`, `target_file_id`, `dependency_type='import'` |
+| `result.scores` (`NodeScore` per file) | `node_scores` | `pagerank_score`, `betweenness_score`, **`composite_score`** (same as API `criticality`) |
+| `result.cycles` (lists of file paths) | `cycles` + `cycle_members` | Header + ordered members by `position` |
+| `result` summary counts / density | `analysis_statistics` | `file_count`, `edge_count`, `graph_density`, … |
+| Repo identity (zip hash or GitHub owner/repo) | `repositories` | One stable row per logical repo |
+| Each analysis run | `analysis_jobs` | `status`, `started_at`, `completed_at`, `duration_ms` |
+
+Example — nodes today:
+
+```python
+result.graph.nodes   # ["myapp/models.py", "myapp/utils.py", ...]
+```
+
+Becomes rows in `files`:
+
+```text
+files
+─────────────────────────────────────
+id          job_id    file_path
+<uuid>      <uuid>    myapp/models.py
+<uuid>      <uuid>    myapp/utils.py
+```
+
+Example — edges today:
+
+```python
+result.graph.edges   # [("myapp/utils.py", "myapp/models.py"), ...]
+```
+
+Becomes rows in `dependencies` (after resolving paths → `files.id`):
+
+```text
+dependencies
+──────────────────────────────────────────────
+source_file_id    target_file_id    dependency_type
+<uuid>            <uuid>            import
+```
+
+Example — scores today:
+
+```python
+result.scores.for_file("myapp/models.py").criticality
+```
+
+Becomes one row in `node_scores`:
+
+```text
+node_scores
+──────────────────────────────────────────────────
+file_id   pagerank_score   betweenness_score   composite_score   in_degree   out_degree
+<uuid>    0.42             0.18                0.91              3           1
+```
+
+**Key idea:** `PipelineResult` is the bridge object. Persistence is a **write adapter** from `PipelineResult` → SQLAlchemy models → `session.commit()`.
+
+**Files to read in order:**
+
+1. `backend/app/config.py` — `settings.database_url` (from `DATABASE_URL` env var)
+2. `backend/app/database.py` — SQLAlchemy engine, `Base`, `get_db()` FastAPI dependency
+3. `backend/app/db/models.py` — ORM models (source of truth for table shapes)
+4. `backend/alembic/env.py` — loads `Base.metadata` + overrides DB URL for migrations
+5. `backend/alembic/versions/63207e50c596_initial_schema.py` — SQL that creates all tables
+
+```text
+backend/
+├── alembic.ini
+├── alembic/
+│   ├── env.py
+│   └── versions/
+│       └── 63207e50c596_initial_schema.py
+└── app/
+    ├── config.py
+    ├── database.py
+    └── db/
+        ├── __init__.py      # public exports
+        └── models.py        # 8 ORM classes
+```
+
+### 1. Data model (how tables relate)
+
+```
+repositories          ← stable identity (owner + repo_name + branch, or zip file_hash)
+    │
+    └── analysis_jobs ← one row per analysis run (status, timings)
+            │
+            ├── files              ← per-job file index + sha256
+            ├── dependencies       ← directed edges (source_file → target_file)
+            ├── node_scores        ← PageRank, betweenness, composite_score
+            ├── cycles             ← cycle header (length)
+            │     └── cycle_members  ← ordered files in each cycle
+            └── analysis_statistics  ← cached counts / graph density
+```
+
+| Table | Role |
+|-------|------|
+| `repositories` | GitHub (`owner`, `repo_name`, `branch`) or zip (`file_hash`); not raw URLs |
+| `analysis_jobs` | `pending` → `processing` → `complete` / `failed` |
+| `files` | `file_path`, `line_count`, `syntax_error`, `sha256` |
+| `dependencies` | `dependency_type` (`import` today; inheritance/call later) |
+| `node_scores` | `composite_score` = DB name for API `criticality` |
+| `cycles` + `cycle_members` | Normalized cycles — query "all cycles containing file X" |
+| `analysis_statistics` | Precomputed counts so `GET /api/graph` doesn't recompute |
+
+### 2. Design choices worth knowing
+
+- **`postgresql_nulls_not_distinct`** on `(owner, repo_name, branch)` — zip uploads have `owner = NULL`; PG15 treats NULLs as equal so duplicate zip stems dedupe correctly.
+- **`composite_score` vs `criticality`** — same formula (`0.6 * norm(PR) + 0.4 * norm(BT)`); JSON export keeps `criticality`, DB uses neutral name.
+- **`cycle_members` PK is `(cycle_id, position)`** — not `(cycle_id, file_id)`; position orders files along the loop.
+- **`get_db()` exists but API doesn't use it yet** — wired for Phase 2 async analyze + persist.
+
+### 3. Important commands
+
+All paths assume project root is `ripple/` unless noted.
+
+#### Start Postgres and apply migrations
+
+```bash
+# From project root
+docker compose up -d db
+
+# From backend/ (venv active)
+cd backend
+source .venv/bin/activate
+alembic upgrade head
+```
+
+#### Verify from bash (one-liners — run from project root)
+
+```bash
+docker compose exec db psql -U ripple -d ripple -c '\dt'
+docker compose exec db psql -U ripple -d ripple -c '\d alembic_version'
+docker compose exec db psql -U ripple -d ripple -c "SELECT * FROM alembic_version;"
+```
+
+Expected after `upgrade head`:
+
+- **9 tables** in `\dt`: 8 SRS tables + `alembic_version`
+- `alembic_version.version_num` = `63207e50c596`
+- Data tables empty until the API write path ships
+
+#### Interactive `psql`
+
+```bash
+docker compose exec db psql -U ripple -d ripple
+```
+
+Once inside:
+
+```sql
+\dt                              -- list tables
+\d alembic_version               -- columns + indexes for one table
+\d repositories
+SELECT * FROM alembic_version;   -- every SQL statement ends with ;
+SELECT COUNT(*) FROM files;
+\q                               -- quit
+```
+
+#### `psql` prompts — what they mean
+
+| Prompt | Meaning |
+|--------|---------|
+| `ripple=#` | Ready for a new command |
+| `ripple-#` | **Continuation** — PostgreSQL is waiting for you to finish the previous statement. Usually you forgot `;`. Type `;` and press Enter, or **Ctrl+C** to cancel |
+
+Example of getting stuck on `ripple-#`:
+
+```sql
+ripple=# SELECT * FROM cycle_members
+ripple-# SELECT * FROM files
+```
+
+You started one `SELECT` without `;`, then typed another line. Fix: `;` + Enter, or Ctrl+C, then run one statement at a time:
+
+```sql
+ripple=# SELECT * FROM cycle_members;
+ripple=# SELECT * FROM files;
+```
+
+#### Common mistakes
+
+| What you did | What happened | Fix |
+|--------------|---------------|-----|
+| `SELECT * FROM alembic_version` in **bash** (outside psql) | `bash: SELECT: command not found` | Open `psql` first, or use `docker compose exec db psql … -c "SELECT …;"` |
+| Split `-c '\dt'` across two lines in bash | Broken command | Keep `-c '\dt'` on one line |
+| Forgot `;` inside psql | Prompt changes to `ripple-#` | Add `;` or Ctrl+C |
+| `alembic upgrade head` with DB down | Connection refused | `docker compose up -d db` first |
+
+#### Generate a new migration (after editing models)
+
+```bash
+cd backend && source .venv/bin/activate
+alembic revision --autogenerate -m "describe change"
+alembic upgrade head
+```
+
+#### Schema unit tests (no live Postgres)
+
+```bash
+pytest tests/test_db_schema.py -v
+```
+
+**Connection URL:** `postgresql://ripple:ripple@localhost:5432/ripple` (default in `config.py`; Docker Compose sets `DATABASE_URL` for the backend service).
+
+Full reference: [Architecture — Database operations](./Architecture.md#database-operations).
+
+### 4. What's shipped vs what's next
+
+| Shipped | Not yet |
+|---------|---------|
+| ORM models + Alembic migration | Async `202` + `GET /api/status/{job_id}` |
+| `alembic upgrade head` creates schema | `GET /api/graph/{job_id}` reads from DB |
+| `POST /api/analyze` persists rows | Idempotent zip re-upload returns cached job |
+| `GET /api/impact` loads from DB after restart | |
+| `test_db_schema.py` + `test_db_persist.py` | |
+
+Today: every successful analyze writes to Postgres **and** caches in `AnalysisStore`. Impact works from either; after restart, only DB remains.
+
+### 5. Tests (`test_db_schema.py`)
+
+**2 tests** — ORM metadata only; no database connection.
+
+| Test | What it proves |
+|------|----------------|
+| `test_schema_tables_registered` | All 8 SRS table names present on `Base.metadata` |
+| `test_schema_foreign_keys` | Key FK targets + `cycle_members` composite PK |
+
+---
+
 ## Introduction to pytest
 
 **pytest** is Python's most common test runner. You write small functions that call your code and use `assert` to check the result; pytest discovers those functions, runs them, and reports pass/fail.
@@ -1794,19 +2124,20 @@ After that, `pytest` is available inside the activated venv. You can also run it
 
 ### Where to run commands
 
-Always run pytest from **`backend/`**, with **`PYTHONPATH=.`** so Python can import the `app` package:
+Always run pytest from **`backend/`**. `pytest.ini` sets `pythonpath = .` so you don't need `PYTHONPATH=.`:
 
 ```bash
 cd backend
 source .venv/bin/activate
-PYTHONPATH=. pytest tests/ -v
+pytest tests/ -v
 ```
 
 | Mistake | What happens |
 |---------|----------------|
 | Run from repo root without `cd backend` | Paths like `tests/test_parser.py` may not resolve |
-| Omit `PYTHONPATH=.` | `ModuleNotFoundError: No module named 'app'` |
-| `cd tests/` then `pytest tests/` | Looks for `tests/tests/` — use `PYTHONPATH=.. pytest . -v` instead |
+| Run `pytest` before `pip install -r requirements.txt` | Missing packages / import errors |
+| `cd tests/` then `pytest tests/` | Looks for `tests/tests/` — run from `backend/` instead |
+| Run SQL in bash instead of `psql` | `bash: SELECT: command not found` — use `docker compose exec db psql …` |
 
 ### What a test looks like
 
@@ -1928,7 +2259,7 @@ That is why `pytest --collect-only` reports **11** tests in `test_parser.py` eve
 
 ## Testing overview
 
-**139 tests** across twelve suites. Run all from `backend/` with `PYTHONPATH=. pytest tests/ -v`.
+**141 tests** across thirteen suites. Run all from `backend/` with `pytest tests/ -v` (`pythonpath = .` in `pytest.ini`).
 
 This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests) or [Architecture — CLI Reference](./Architecture.md#12-cli-reference). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
 
@@ -1944,6 +2275,7 @@ This section is the **detailed test catalog** — what each file proves and how 
 | Ingestion (zip) | `test_ingestion.py` | 8 | Unit | Zip path/bytes, zip-slip, cleanup |
 | Ingestion (GitHub) | `test_github_ingestion.py` | 17 | Unit + integration | URL parse, mocked clone, live `pypa/sampleproject` |
 | API | `test_api.py` | 14 | Integration | `POST /api/analyze` — zip, GitHub URL; `GET /api/impact` |
+| DB schema | `test_db_schema.py` | 2 | Unit | ORM metadata: 8 SRS tables + key FKs / PKs (no live Postgres) |
 | Serialize | `test_serialize.py` | 18 | Unit | JSON (`metadata`, `repository`, `statistics`, rounded scores, …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `nx.DiGraph` |
 | Scoring | `tests/algorithms/test_scoring.py` | 13 | Unit | `AlgorithmEngine` on synthetic `nx.DiGraph` |
@@ -2067,7 +2399,7 @@ See tables in the ingestion section above for per-test descriptions.
 | Area | Notes |
 |------|-------|
 | Single-file pipeline input | CLI accepts dirs only |
-| Async API + PostgreSQL | `202` + poll status — planned Phase 2 |
+| Async API + Postgres write path | Schema/Alembic shipped; `202` + poll + persist results — remaining Phase 2 |
 | Syntax-error files through pipeline | Covered in graph unit tests only |
 | Five real open-source repos | Roadmap Week 1 milestone — manual / future |
 | Private GitHub repos | OAuth deferred to v2 |
@@ -2081,7 +2413,8 @@ Read [Roadmap.md](./Roadmap.md) for week-by-week tasks. Short preview:
 | Component | What it will do |
 |-----------|-----------------|
 | Pipeline stage metrics + benchmark CLI | Shipped — `PipelineResult.metrics`, `python -m app.benchmark` |
-| REST API + Postgres | Persist results across restarts, async jobs, graph endpoint |
+| PostgreSQL schema + Alembic | Shipped — `app/db/models.py`, `alembic upgrade head` |
+| Persist results + async jobs | Write `PipelineResult` into Postgres, `202` + poll status, graph endpoint |
 | End-to-end on 3 real repos | Manual validation milestone |
 
 `AnalysisPipeline` (parser → graph → cycles → scores) is **shipped**. See [Future Scope](#future-scope) for V2/V3 capabilities.
@@ -2094,9 +2427,10 @@ Read [Roadmap.md](./Roadmap.md) for week-by-week tasks. Short preview:
 |---------|----------|
 | `fastapi` + `uvicorn` | HTTP API |
 | `sqlalchemy` + `psycopg2` | Postgres ORM |
+| `alembic` | Schema migrations (`alembic upgrade head`) |
 | `networkx` + `numpy` + `scipy` | Cycles (`simple_cycles`); PageRank / betweenness |
-| `pytest` + `httpx2` | Backend tests (FastAPI `TestClient`) — see [Introduction to pytest](#introduction-to-pytest) |
+| `pytest` + `httpx` | Backend tests (FastAPI `TestClient`) — see [Introduction to pytest](#introduction-to-pytest) |
 
 ---
 
-*Add a new major section here each time a component ships (GraphBuilder, CycleDetector, AlgorithmEngine, ImpactAnalyzer, …).*
+*Add a new major section here each time a component ships (GraphBuilder, CycleDetector, AlgorithmEngine, ImpactAnalyzer, PostgreSQL schema, …).*
