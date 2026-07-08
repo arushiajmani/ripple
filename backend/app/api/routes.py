@@ -8,7 +8,9 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.api.analysis import analyze_github_url, analyze_uploaded_zip
-from app.api.deps import get_ingestion_service
+from app.api.deps import get_analysis_store, get_ingestion_service
+from app.api.impact import analyze_file_impact
+from app.graph.algorithms.impact import FileNotInGraphError
 from app.ingestion import (
     CloneError,
     IngestionService,
@@ -16,7 +18,8 @@ from app.ingestion import (
     RepositoryNotFoundError,
     parse_github_url,
 )
-from app.pipeline.serialize import build_repository
+from app.pipeline.serialize import build_repository, impact_analysis_to_dict
+from app.pipeline.store import AnalysisNotFoundError, AnalysisStore
 
 router = APIRouter()
 
@@ -26,6 +29,7 @@ async def analyze(
     file: UploadFile | None = File(default=None),
     github_url: str | None = Form(default=None),
     ingestion: IngestionService = Depends(get_ingestion_service),
+    store: AnalysisStore = Depends(get_analysis_store),
 ) -> dict:
     """Analyze a Python repository from a zip upload or a public GitHub URL."""
     has_file = file is not None and file.filename
@@ -43,15 +47,36 @@ async def analyze(
         )
 
     if has_file:
-        return await _analyze_zip_upload(file, ingestion)
+        return await _analyze_zip_upload(file, ingestion, store)
 
     assert github_url is not None
-    return _analyze_github_submission(github_url, ingestion)
+    return _analyze_github_submission(github_url, ingestion, store)
+
+
+@router.get("/api/impact/{repo_id}")
+def get_impact(
+    repo_id: str,
+    file: str,
+    store: AnalysisStore = Depends(get_analysis_store),
+) -> dict:
+    """Return on-demand impact analysis for one file in a previously analyzed repo."""
+    if not file.strip():
+        raise HTTPException(status_code=400, detail="Query parameter 'file' is required")
+
+    try:
+        result = analyze_file_impact(store, repo_id, file)
+    except AnalysisNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FileNotInGraphError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return impact_analysis_to_dict(result)
 
 
 async def _analyze_zip_upload(
     file: UploadFile,
     ingestion: IngestionService,
+    store: AnalysisStore,
 ) -> dict:
     data = await file.read()
     if not data:
@@ -63,6 +88,7 @@ async def _analyze_zip_upload(
             ingestion,
             data,
             zip_name=zip_name,
+            store=store,
         )
     except zipfile.BadZipFile as exc:
         raise HTTPException(status_code=400, detail="Invalid zip file") from exc
@@ -78,9 +104,10 @@ async def _analyze_zip_upload(
 def _analyze_github_submission(
     github_url: str,
     ingestion: IngestionService,
+    store: AnalysisStore,
 ) -> dict:
     try:
-        job_id, result = analyze_github_url(ingestion, github_url)
+        job_id, result = analyze_github_url(ingestion, github_url, store=store)
     except InvalidGitHubUrlError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RepositoryNotFoundError as exc:

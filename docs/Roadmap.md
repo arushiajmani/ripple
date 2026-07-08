@@ -96,7 +96,7 @@ Run `python -m app.parser.cli path/to/any_file.py` and see correctly extracted i
 - [x] Compute composite criticality score: `0.6 * normalized_pagerank + 0.4 * normalized_betweenness`
 - [x] Detect circular dependencies (`nx.simple_cycles`) — `CycleDetector` in `graph/algorithms/cycles.py`, wired into `AnalysisPipeline` as `PipelineResult.cycles`
 - [x] Compute in-degree and out-degree for each node — on `NodeScore`
-- [x] Write unit tests using small synthetic graphs (5–10 nodes) with known correct answers — `test_graph.py`, `test_cycles.py`, `test_scoring.py`, `test_pipeline.py`
+- [x] Write unit tests using small synthetic graphs (5–10 nodes) with known correct answers — `test_graph.py`, `test_cycles.py`, `test_scoring.py`, `test_impact.py`, `test_pipeline.py`
 - [x] Serialize graph results to JSON — `metadata` / `summary` / `statistics` / `graph` / `analysis` / `files`
 
 #### Milestone Check
@@ -108,7 +108,7 @@ PYTHONPATH=. pytest tests/test_graph.py tests/algorithms/ tests/test_pipeline.py
 python -m app.pipeline tests/fixtures/mini_repo --json result.json
 ```
 
-**Study guides:** [Cycle Detection](./learn.md#phase-1-week-2--cycle-detection) · [Criticality Scoring](./learn.md#phase-1-week-2--criticality-scoring) · [Pipeline](./learn.md#phase-1--analysis-pipeline).
+**Study guides:** [Cycle Detection](./learn.md#phase-1-week-2--cycle-detection) · [Criticality Scoring](./learn.md#phase-1-week-2--criticality-scoring) · [Impact Analysis](./learn.md#phase-1-week-2--impact-analysis) · [Pipeline](./learn.md#phase-1--analysis-pipeline).
 
 #### Understanding The Algorithms (For Interviews)
 
@@ -151,7 +151,7 @@ Full property glossary: [learn.md — What each property means](./learn.md#1-wha
 cd backend && source .venv/bin/activate
 PYTHONPATH=. pytest tests/test_ingestion.py -v          # zip (8)
 PYTHONPATH=. pytest tests/test_github_ingestion.py -v   # GitHub (17)
-PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP (11)
+PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP analyze + impact (14)
 
 # Manual: local directory → pipeline → JSON
 python -m app.pipeline tests/fixtures/mini_repo --json result.json
@@ -162,6 +162,11 @@ curl -s -X POST http://localhost:8000/api/analyze \
 
 curl -s -X POST http://localhost:8000/api/analyze \
   -F "github_url=https://github.com/pypa/sampleproject" | python3 -m json.tool
+
+# Impact (after analyze — use job_id from response)
+JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" | python3 -m json.tool
 
 # Benchmark: per-stage timing breakdown
 python -m app.benchmark --repo tests/fixtures/mini_repo
@@ -221,36 +226,60 @@ Upload a zip via `curl` or Swagger UI. Poll status endpoint until `"complete"`. 
 
 ---
 
-### Week 5 — Graph + Impact Endpoints
+### Week 5 — Graph Endpoints *(impact shipped)*
 
 #### Tasks
 
+- [x] Implement `ImpactAnalyzer` in `backend/app/graph/algorithms/impact.py` — on-demand blast radius (direct + transitive dependents, hop-distance layers)
+- [x] Implement `AnalysisStore` — in-memory `PipelineResult` cache by `job_id` for on-demand queries (PostgreSQL planned)
+- [x] Implement `GET /api/impact/{repo_id}?file=path/to/file.py` — returns impact analysis ([SRS §8](./SRS_ProjectPlan.md#get-apiimpactrepo_id); `tests/algorithms/test_impact.py`, 8 cases; `tests/test_api.py`, 3 impact cases)
 - [ ] Implement `GET /api/graph/{repo_id}` — returns full graph JSON (nodes, edges, scores, cycles); optional `?top=N` to slice scores
-- [ ] Implement `GET /api/impact/{repo_id}?file=path/to/file.py` — returns direct and transitive dependents
 - [ ] Implement `GET /api/repos` — returns list of all analyzed repos
 - [ ] Add proper HTTP error responses (404 for unknown repo_id, 422 for invalid inputs)
 - [ ] Add CORS configuration so React frontend can call the API
-- [ ] Write integration tests for all endpoints using FastAPI's `TestClient` *(partial: `tests/test_api.py` covers sync `POST /api/analyze` — zip and GitHub, 11 cases)*
+- [ ] Write integration tests for all endpoints using FastAPI's `TestClient` *(partial: `tests/test_api.py` covers sync `POST /api/analyze` and `GET /api/impact` — 14 cases)*
 
 #### Milestone Check
 
-All endpoints return correct data. Frontend can be started and make API calls without CORS errors. Impact analysis for a known file returns the correct set of dependents.
+Impact endpoint (shipped):
+
+```bash
+cd backend && source .venv/bin/activate
+uvicorn app.main:app --reload &
+JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@tests/fixtures/mini_repo.zip" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" | python3 -m json.tool
+```
+
+Remaining Week 5: graph + repos endpoints; CORS; full Swagger coverage. API contract: [SRS §8 — GET /api/impact/{repo_id}](./SRS_ProjectPlan.md#get-apiimpactrepo_id).
 
 #### The Impact Analysis Algorithm (Explained)
 
+**Shipped:** `ImpactAnalyzer` in `backend/app/graph/algorithms/impact.py`. Study guide: [learn.md — Impact Analysis](./learn.md#phase-1-week-2--impact-analysis).
+
 "What breaks if I change file X?" means: find all files that directly or transitively import X.
 
-In graph terms: find all nodes from which X is reachable following edge direction in reverse.
+In graph terms: find all **predecessors** (reverse reachability). Edges are importer → imported.
 
 ```python
-# In NetworkX:
-dependents = nx.ancestors(G, target_file)
-# Returns all nodes that have a path TO target_file
-# i.e., all files that (directly or transitively) import target_file
+# In NetworkX (ImpactAnalyzer):
+direct = sorted(digraph.predecessors(target_file))
+indirect = sorted(nx.ancestors(digraph, target_file) - set(direct))
+
+# Hop-distance layers (for concentric UI):
+rev = digraph.reverse(copy=False)
+distances = nx.single_source_shortest_path_length(rev, target_file)
 ```
 
-Direct dependents = nodes with a direct edge to target_file (`G.predecessors(target_file)`)
-Transitive dependents = all ancestors (`nx.ancestors(G, target_file)`)
+Direct dependents = immediate predecessors. Indirect dependents = ancestors minus direct. Each file appears in exactly one layer by hop distance. The target's existing `NodeScore` is looked up from `ScoringResult` — not recomputed.
+
+**Tests:**
+
+```bash
+PYTHONPATH=. pytest tests/algorithms/test_impact.py -v
+PYTHONPATH=. pytest tests/test_api.py -k impact -v
+```
 
 ---
 

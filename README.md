@@ -37,18 +37,18 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 * **Graph adapter** — `GraphAdapter` converts `GraphResult` → `networkx.DiGraph` once per pipeline run
 * **Cycle detection** — `CycleDetector` finds circular dependencies on the shared `DiGraph` (`graph/algorithms/cycles.py`)
 * **Criticality scoring** — `AlgorithmEngine`: PageRank (how depended-on), betweenness (bridge/bottleneck), criticality (`0.6 * norm(PR) + 0.4 * norm(BT)` risk rank), in/out degree
+* **Impact analysis** — `ImpactAnalyzer`: on-demand blast radius for one file (direct + transitive dependents, hop-distance layers, impact count/percent); reuses existing `NodeScore` for the target; `GET /api/impact/{repo_id}?file=...`
 * **Analysis pipeline** — parse → graph → cycles → scores (`PipelineResult`)
 * **JSON export** — `result.write_json("result.json")` or `python -m app.pipeline <repo> --json result.json`
 * **CLI** — parser: `python -m app.parser.cli`; pipeline: `python -m app.pipeline` (report + optional JSON)
 * **Zip ingestion** — `IngestionService`: extract upload to `/tmp/ripple/{job_id}/`, then run pipeline; `cleanup()` when done
 * **GitHub ingestion** — clone public repos via URL (`git clone --depth 1`); URL validation, existence check (`git ls-remote`), shallow clone to same job-dir layout
-* **REST API (partial)** — `POST /api/analyze` accepts a **zip upload** or a **GitHub URL** (`github_url` form field), runs ingest → pipeline → cleanup synchronously, returns full analysis JSON
+* **REST API (partial)** — `POST /api/analyze` accepts a **zip upload** or a **GitHub URL** (`github_url` form field), runs ingest → pipeline → cleanup synchronously, returns full analysis JSON; `GET /api/impact/{repo_id}?file=...` for on-demand impact on a previously analyzed repo (in-memory store until PostgreSQL)
 * **Pipeline metrics** — per-stage timings on `PipelineResult.metrics`
 * **Benchmark CLI** — `python -m app.benchmark --repo path/to/project`
 
 ### Planned (near term)
 
-* Impact analysis for proposed changes
 * Interactive graph visualization
 * Async API (202 + background jobs, PostgreSQL persistence, status/graph endpoints)
 
@@ -57,7 +57,7 @@ Ripple is a code dependency analysis platform that parses Python repositories, c
 | Version | Focus |
 |---------|--------|
 | **V1 (current)** | File-level import graph — nodes = files, edges = `resolved_deps` |
-| **V2** | Class graph (inheritance + dependencies), function/call graphs, impact analysis, library analytics (`external_deps`), graph algorithms |
+| **V2** | Class graph (inheritance + dependencies), function/call graphs, library analytics (`external_deps`), graph algorithms |
 | **V3** | AI-assisted repository explanations, architectural insights, change-risk estimation |
 
 See [docs/learn.md](docs/learn.md#design-decisions) for design rationale and [docs/learn.md](docs/learn.md#future-scope) for detail.
@@ -82,11 +82,15 @@ networkx.DiGraph          shared by all graph algorithms
     └── AlgorithmEngine   ScoringResult (PageRank, betweenness, criticality)
     ↓
 PipelineResult            analyses + graph + cycles + scores
+    ↓
+AnalysisStore             in-memory cache by job_id (on-demand queries)
+    ↓
+ImpactAnalyzer            ImpactAnalysisResult (per-file, not a batch stage)
 ```
 
 **Parser layer:** `ASTParser`, `FileAnalysis`, RepositoryParser (`parse_repository` in `repository.py`)
 
-**Graph layer:** `GraphBuilder`, `GraphResult`, `GraphAdapter`, `CycleDetector`, `AlgorithmEngine`, `ScoringResult`
+**Graph layer:** `GraphBuilder`, `GraphResult`, `GraphAdapter`, `CycleDetector`, `AlgorithmEngine`, `ScoringResult`, `ImpactAnalyzer`, `ImpactAnalysisResult`
 
 **Pipeline:** `AnalysisPipeline` orchestrates parse → graph → adapter → algorithms. `GraphBuilder` currently reads only `resolved_deps`; other `FileAnalysis` fields (`classes`, `functions`, `imports`, `external_deps`, `line_count`, `has_syntax_error`) are preserved for V2 graph builders without reparsing.
 
@@ -121,7 +125,7 @@ Full rationale: [Design Decisions](docs/learn.md#design-decisions) · Roadmap: [
 ripple/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py              # FastAPI app (health check)
+│   │   ├── main.py              # FastAPI app + AnalysisStore
 │   │   ├── parser/
 │   │   │   ├── models.py        # FileAnalysis, ImportInfo, …
 │   │   │   ├── ast_parser.py    # ASTParser (single-file parsing)
@@ -134,7 +138,13 @@ ripple/
 │   │   │   ├── builder.py       # GraphBuilder
 │   │   │   └── algorithms/
 │   │   │       ├── cycles.py    # CycleDetector
-│   │   │       └── scoring.py   # AlgorithmEngine
+│   │   │       ├── scoring.py   # AlgorithmEngine
+│   │   │       └── impact.py    # ImpactAnalyzer (on-demand)
+│   │   ├── api/
+│   │   │   ├── routes.py        # POST /api/analyze, GET /api/impact/{repo_id}
+│   │   │   ├── analysis.py      # ingest → pipeline orchestration
+│   │   │   ├── impact.py        # on-demand impact from stored artifacts
+│   │   │   └── deps.py          # FastAPI dependencies
 │   │   ├── benchmark/
 │   │   │   └── __main__.py    # python -m app.benchmark --repo <path>
 │   │   ├── ingestion/
@@ -148,19 +158,21 @@ ripple/
 │   │   └── pipeline/
 │   │       ├── pipeline.py      # AnalysisPipeline (parse → graph → cycles → scores)
 │   │       ├── serialize.py     # PipelineResult → JSON
+│   │       ├── store.py         # AnalysisStore (in-memory results by job_id)
 │   │       └── __main__.py      # python -m app.pipeline [--json PATH]
 │   └── tests/
 │       ├── sample_file.py       # single file to try the parser on
-│       ├── test_parser.py       # parser tests (11)
+│       ├── test_parser.py       # parser tests (15)
 │       ├── test_graph.py        # graph builder tests (9)
 │       ├── test_adapter.py      # graph adapter tests (4)
 │       ├── test_pipeline.py     # pipeline tests (9)
 │       ├── test_ingestion.py    # zip extract, zip-slip, cleanup (8)
 │       ├── test_github_ingestion.py  # GitHub URL, mocked clone, live integration (17)
-│       ├── test_api.py          # POST /api/analyze — zip + GitHub (11)
+│       ├── test_api.py          # POST /api/analyze + GET /api/impact (14)
 │       ├── algorithms/
 │       │   ├── test_cycles.py   # cycle detection (8)
-│       │   └── test_scoring.py  # PageRank / criticality (13)
+│       │   ├── test_scoring.py  # PageRank / criticality (13)
+│       │   └── test_impact.py   # blast radius / layers (8)
 │       └── fixtures/
 │           └── mini_repo/       # cyclic fixture (models ↔ utils)
 ├── frontend/
@@ -372,9 +384,13 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-### API (zip upload or GitHub URL)
+### API (REST endpoints)
 
-From the **repo root** (path to the zip is relative to where you run curl). Requires **git** on the server for GitHub URLs.
+From the **repo root** (path to the zip is relative to where you run curl). Requires **git** on the server for GitHub URLs. Full contract: [SRS §8 — API Design](docs/SRS_ProjectPlan.md#8-api-design) · [Architecture §6 — API Contract](docs/Architecture.md#6-api-contract).
+
+#### POST /api/analyze
+
+Run full analysis on a zip upload or public GitHub URL. Returns `job_id`, `status`, `repository`, and the full analysis payload. Score floats are rounded to four decimal places in JSON.
 
 ```bash
 # Start server (in backend/)
@@ -389,7 +405,7 @@ curl -s -X POST http://localhost:8000/api/analyze \
   -F "github_url=https://github.com/pypa/sampleproject" | python3 -m json.tool
 ```
 
-Provide **either** `file` or `github_url`, not both. Returns `job_id`, `status`, `repository` (`name` + `source`: `zip` or `github`), and the full analysis payload. Score floats are rounded to four decimal places in JSON.
+Provide **either** `file` or `github_url`, not both. Flow: ingest → `AnalysisPipeline.run(local_path)` → `AnalysisStore.save(job_id, result)` → `cleanup()` (temp dir removed). Use returned `job_id` as `repo_id` for impact queries.
 
 | Error | When |
 |-------|------|
@@ -397,7 +413,30 @@ Provide **either** `file` or `github_url`, not both. Returns `job_id`, `status`,
 | 404 | GitHub repo not found or not accessible |
 | 502 | `git clone` failed |
 
+#### GET /api/impact/{repo_id}
+
+On-demand blast radius for one file in a **previously analyzed** repo. Use `job_id` from `POST /api/analyze` as `repo_id`. Does not re-parse or rebuild the graph.
+
+```bash
+JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+
+curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" \
+  | python3 -m json.tool
+```
+
+| Error | When |
+|-------|------|
+| 400 | Missing or empty `file` query parameter |
+| 404 | Unknown `repo_id` (analysis not in store) |
+| 404 | File not in graph |
+
+Response includes `target`, `direct_dependents`, `indirect_dependents`, labeled `layers`, and `summary` (counts + `files_affected_percentage`).
+
 Health check: `curl http://localhost:8000/health`
+
+Interactive API docs (includes both endpoints): `http://localhost:8000/docs`
 
 ### Tests
 
@@ -421,10 +460,24 @@ python -m app.pipeline tests/fixtures/mini_repo
 python -m app.benchmark --repo tests/fixtures/mini_repo
 PYTHONPATH=. pytest tests/test_ingestion.py -v          # zip (8)
 PYTHONPATH=. pytest tests/test_github_ingestion.py -v   # GitHub (17)
-PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP zip + GitHub (11)
+PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP analyze + impact (14)
 ```
 
 Use any directory as `<repo-path>` for parser / pipeline / benchmark. Full sheet: [Architecture — Command sheet](docs/Architecture.md#command-sheet-all-inputs).
+
+**Impact API (after analyze):**
+
+```bash
+cd backend
+source .venv/bin/activate
+
+# 1. Analyze a zip; capture job_id from JSON
+JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+
+# 2. Query impact for one file (use a path from the analyze response graph.nodes)
+curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" | python3 -m json.tool
+```
 
 **Per-suite pytest:**
 ```bash
@@ -437,9 +490,9 @@ PYTHONPATH=. pytest tests/test_pipeline.py -v    # pipeline (9)
 PYTHONPATH=. pytest tests/test_ingestion.py -v          # zip (8)
 PYTHONPATH=. pytest tests/test_github_ingestion.py -v   # GitHub (17)
 PYTHONPATH=. pytest tests/test_benchmark.py -v   # metrics + benchmark (16)
-PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (16)
-PYTHONPATH=. pytest tests/test_api.py -v          # API (11)
-PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (13)
+PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export (18)
+PYTHONPATH=. pytest tests/test_api.py -v          # API (14)
+PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (13) + impact (8)
 ```
 
 | Suite | Tests | Covers |
@@ -451,14 +504,15 @@ PYTHONPATH=. pytest tests/algorithms/ -v         # cycles (8) + scoring (13)
 | **`test_ingestion.py`** | 8 | Zip extract, zip-slip rejection, cleanup, pipeline integration |
 | **`test_github_ingestion.py`** | 17 | GitHub URL parsing, mocked clone, live integration (`pypa/sampleproject`) |
 | **`test_benchmark.py`** | 16 | Stage metrics, grouped table formatting, `metrics_iterator`, duplicate/unknown stages, percentages |
-| **`test_serialize.py`** | 16 | metadata, summary, statistics, graph, analysis, files |
-| **`test_api.py`** | 11 | `POST /api/analyze` — zip upload, GitHub URL, validation errors, cleanup |
+| **`test_serialize.py`** | 18 | metadata, summary, statistics, graph, analysis, files |
+| **`test_api.py`** | 14 | `POST /api/analyze` — zip, GitHub URL, validation; `GET /api/impact` — dependents, 404s |
 | **`test_cycles.py`** | 8 | `CycleDetector`: empty/acyclic graphs, simple cycles, self-loops, disjoint cycles, normalization |
 | **`test_scoring.py`** | 13 | `AlgorithmEngine`: normalize, PageRank fan-in, betweenness bridge, criticality weights, warm-up, `top()` |
+| **`test_impact.py`** | 8 | `ImpactAnalyzer`: linear chain, diamond layers, cycles, leaf (0%), missing file, score lookup, metrics |
 
 **Fixture:** `tests/fixtures/mini_repo/` — shared by parser and pipeline; intentionally cyclic (`models` ↔ `utils`) so `python -m app.pipeline tests/fixtures/mini_repo` reports one cycle and top critical files.
 
-**More detail:** [Cycle Detection](docs/learn.md#phase-1-week-2--cycle-detection) · [Criticality Scoring](docs/learn.md#phase-1-week-2--criticality-scoring) · [Testing overview](docs/learn.md#testing-overview)
+**More detail:** [Cycle Detection](docs/learn.md#phase-1-week-2--cycle-detection) · [Criticality Scoring](docs/learn.md#phase-1-week-2--criticality-scoring) · [Impact Analysis](docs/learn.md#phase-1-week-2--impact-analysis) · [Testing overview](docs/learn.md#testing-overview)
 
 ---
 
@@ -499,7 +553,9 @@ npm run dev
 * [x] `AnalysisPipeline` — parser → graph → cycles → scores
 * [x] Pipeline tests (`tests/test_pipeline.py`, 9 cases)
 * [x] `AlgorithmEngine` — PageRank, betweenness, criticality (`test_scoring.py`, 13 cases)
+* [x] `ImpactAnalyzer` — on-demand blast radius, layered dependents (`test_impact.py`, 8 cases)
 * [x] JSON export — `serialize.py`, `--json PATH` (`test_serialize.py`)
 * [x] `IngestionService` (zip upload, GitHub clone, temp extract, cleanup)
-* [x] `POST /api/analyze` — sync zip or GitHub URL → pipeline → cleanup (`tests/test_api.py`, 11 cases)
+* [x] `POST /api/analyze` — sync zip or GitHub URL → pipeline → cleanup (`tests/test_api.py`)
+* [x] `GET /api/impact/{repo_id}?file=...` — on-demand impact from stored `PipelineResult` (`tests/test_api.py`)
 * [x] Pipeline stage metrics and benchmark CLI

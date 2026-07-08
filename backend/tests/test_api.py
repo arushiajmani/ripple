@@ -44,7 +44,10 @@ def ingestion_base_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def client(ingestion_base_dir: Path) -> TestClient:
+    from app.pipeline.store import AnalysisStore
+
     app.state.ingestion_base_dir = ingestion_base_dir
+    app.state.analysis_store = AnalysisStore()
     return TestClient(app)
 
 
@@ -227,3 +230,54 @@ def test_analyze_github_url_returns_404_for_missing_repo(
 
     assert response.status_code == 404
     assert "not found" in response.json()["detail"].lower()
+
+
+def test_impact_returns_dependents_for_analyzed_repo(client: TestClient) -> None:
+    analyze = client.post(
+        "/api/analyze",
+        files={"file": ("mini_repo.zip", _mini_repo_zip_bytes(), "application/zip")},
+    )
+    assert analyze.status_code == 200
+    repo_id = analyze.json()["job_id"]
+
+    response = client.get(
+        "/api/impact/{0}".format(repo_id),
+        params={"file": "mini_repo/myapp/models.py"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target"]["file"] == "mini_repo/myapp/models.py"
+    assert "mini_repo/myapp/utils.py" in body["direct_dependents"]
+    assert body["summary"]["total"] >= 1
+    assert body["summary"]["files_affected_percentage"] > 0.0
+    assert "score" in body["target"]
+    assert "file_path" not in body["target"]["score"]
+    assert body["layers"][0]["depth"] == 1
+    assert body["layers"][0]["files"] == body["direct_dependents"]
+
+
+def test_impact_returns_404_for_unknown_repo(client: TestClient) -> None:
+    response = client.get(
+        "/api/impact/does-not-exist",
+        params={"file": "a.py"},
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_impact_returns_404_for_file_not_in_graph(client: TestClient) -> None:
+    analyze = client.post(
+        "/api/analyze",
+        files={"file": ("mini_repo.zip", _mini_repo_zip_bytes(), "application/zip")},
+    )
+    repo_id = analyze.json()["job_id"]
+
+    response = client.get(
+        "/api/impact/{0}".format(repo_id),
+        params={"file": "missing.py"},
+    )
+
+    assert response.status_code == 404
+    assert "not in graph" in response.json()["detail"].lower()

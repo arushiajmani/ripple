@@ -45,6 +45,7 @@ from typing import Any
 from app.graph.models import (
     CircularDependencyResult,
     GraphResult,
+    ImpactAnalysisResult,
     NodeScore,
     ScoringResult,
 )
@@ -131,6 +132,41 @@ def node_score_to_dict(score: NodeScore) -> dict[str, Any]:
         "criticality": round_json_float(score.criticality),
         "in_degree": score.in_degree,
         "out_degree": score.out_degree,
+    }
+
+
+def impact_target_score_to_dict(score: NodeScore) -> dict[str, Any]:
+    """Target score in impact responses — path is on ``target.file``, not repeated here."""
+    return {
+        "pagerank": round_json_float(score.pagerank),
+        "betweenness": round_json_float(score.betweenness),
+        "criticality": round_json_float(score.criticality),
+        "in_degree": score.in_degree,
+        "out_degree": score.out_degree,
+    }
+
+
+def impact_analysis_to_dict(result: ImpactAnalysisResult) -> dict[str, Any]:
+    """On-demand blast-radius payload for ``GET /api/impact/{repo_id}``."""
+    target_payload: dict[str, Any] = {"file": result.target.file}
+    if result.target.score is not None:
+        target_payload["score"] = impact_target_score_to_dict(result.target.score)
+
+    return {
+        "target": target_payload,
+        "direct_dependents": result.direct_dependents,
+        "indirect_dependents": result.indirect_dependents,
+        "layers": [
+            {"depth": layer.depth, "files": layer.files}
+            for layer in result.layers
+        ],
+        "summary": {
+            "direct": result.summary.direct,
+            "indirect": result.summary.indirect,
+            "total": result.summary.total,
+            "max_depth": result.summary.max_depth,
+            "files_affected_percentage": result.summary.files_affected_percentage,
+        },
     }
 
 

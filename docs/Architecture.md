@@ -93,12 +93,14 @@ ripple/
 │   │   │   ├── models.py       # GraphResult, ScoringResult, …
 │   │   │   └── algorithms/
 │   │   │       ├── cycles.py   # CycleDetector
-│   │   │       └── scoring.py  # AlgorithmEngine (PageRank, betweenness)
+│   │   │       ├── scoring.py  # AlgorithmEngine (PageRank, betweenness)
+│   │   │       └── impact.py   # ImpactAnalyzer (on-demand blast radius)
 │   │   │
 │   │   ├── pipeline/           # Component 4: Orchestration
 │   │   │   ├── __init__.py
 │   │   │   ├── pipeline.py     # AnalysisPipeline (parse → graph → adapter → algorithms)
 │   │   │   ├── serialize.py  # JSON export (metadata/summary/statistics/graph/…)
+│   │   │   ├── store.py        # AnalysisStore (in-memory PipelineResult by job_id)
 │   │   │   └── __main__.py   # python -m app.pipeline <repo> [--json PATH]
 │   │   ├── benchmark/
 │   │   │   └── __main__.py     # python -m app.benchmark --repo <path>
@@ -106,8 +108,10 @@ ripple/
 │   │   │
 │   │   ├── api/                # Component 5: HTTP layer
 │   │   │   ├── __init__.py
-│   │   │   ├── routes.py       # All endpoint definitions
-│   │   │   └── schemas.py      # Pydantic request/response models
+│   │   │   ├── routes.py       # POST /api/analyze, GET /api/impact/{repo_id}
+│   │   │   ├── analysis.py     # ingest → pipeline orchestration
+│   │   │   ├── impact.py       # on-demand impact from stored artifacts
+│   │   │   └── deps.py         # FastAPI dependencies
 │   │   │
 │   │   └── db/                 # Component 6: Database models
 │   │       ├── __init__.py
@@ -120,10 +124,11 @@ ripple/
 │       ├── test_pipeline.py     # AnalysisPipeline (9)
 │       ├── test_ingestion.py    # zip extract (8)
 │       ├── test_github_ingestion.py  # GitHub clone (17)
-│       ├── test_api.py          # POST /api/analyze (11)
+│       ├── test_api.py          # POST /api/analyze + GET /api/impact (14)
 │       ├── algorithms/
 │       │   ├── test_cycles.py   # CycleDetector (8)
-│       │   └── test_scoring.py  # AlgorithmEngine (13)
+│       │   ├── test_scoring.py  # AlgorithmEngine (13)
+│       │   └── test_impact.py   # ImpactAnalyzer (8)
 │       └── fixtures/
 │           └── mini_repo/       # cyclic fixture (models ↔ utils)
 │
@@ -175,12 +180,13 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 | Benchmark | `tests/test_benchmark.py` | 16 | Stage metrics, grouped CLI table, `metrics_iterator`, edge cases |
 | Ingestion (zip) | `tests/test_ingestion.py` | 8 | Zip extract, zip-slip, cleanup, pipeline |
 | Ingestion (GitHub) | `tests/test_github_ingestion.py` | 17 | URL validation, mocked clone, live integration |
-| API | `tests/test_api.py` | 11 | `POST /api/analyze` — zip, GitHub URL, errors, cleanup |
-| Serialize | `tests/test_serialize.py` | 16 | JSON (metadata, repository, statistics, graph, …) |
+| API | `tests/test_api.py` | 14 | `POST /api/analyze` — zip, GitHub URL, errors, cleanup; `GET /api/impact` |
+| Serialize | `tests/test_serialize.py` | 18 | JSON (metadata, repository, statistics, graph, …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `nx.DiGraph` only |
 | Scoring | `tests/algorithms/test_scoring.py` | 13 | `AlgorithmEngine` — PageRank, betweenness, criticality, warm-up |
+| Impact | `tests/algorithms/test_impact.py` | 8 | `ImpactAnalyzer` — layers, cycles, score lookup, metrics |
 
-**126 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
+**139 tests total.** Run from `backend/`: `PYTHONPATH=. pytest tests/ -v` (`-v` = verbose — lists each test name and PASSED/FAILED).
 
 - **CLI commands (all tools + tests):** [§12 CLI Reference](#12-cli-reference)
 - **Quick commands:** [README — Tests](../README.md#tests)
@@ -215,8 +221,7 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │                       API Layer                              │  │
-│  │  POST /analyze  GET /status/:id  GET /graph/:id              │  │
-│  │  GET /impact/:id?file=...        GET /repos                  │  │
+│  │  POST /analyze  GET /impact/:id?file=...  GET /repos (planned)   │  │
 │  └──────────────────────────┬───────────────────────────────────┘  │
 │                             │                                       │
 │  ┌──────────────────────────▼───────────────────────────────────┐  │
@@ -241,6 +246,11 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 │                     ┌────────▼────────┐  │    GraphAdapter     │  │
 │                     │  GraphResult    │  │ GraphResult→DiGraph │  │
 │                     │  (nodes+edges)  │──►  (built once/run)   │  │
+│                     └────────┬────────┘  └─────────────────────┘  │
+│                              │                                    │
+│                     ┌────────▼────────┐  ┌─────────────────────┐  │
+│                     │ AnalysisStore   │  │   ImpactAnalyzer    │  │
+│                     │ (in-memory)     │──►  (on-demand query)  │  │
 │                     └─────────────────┘  └─────────────────────┘  │
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
@@ -417,6 +427,10 @@ networkx.DiGraph          shared by all graph algorithms (built once per run)
     └── AlgorithmEngine   PageRank, betweenness, criticality
     ↓
 PipelineResult            analyses + graph + cycles + scores
+    ↓
+AnalysisStore             in-memory cache by job_id (on-demand queries)
+    ↓
+ImpactAnalyzer            ImpactAnalysisResult (per-file, not a batch stage)
 ```
 
 `AnalysisPipeline` wires RepositoryParser → GraphBuilder → GraphAdapter → CycleDetector + AlgorithmEngine and returns `PipelineResult(analyses, graph, cycles, scores)`.
@@ -427,7 +441,7 @@ PipelineResult            analyses + graph + cycles + scores
 |-------|------------|------|
 | Parser | `ASTParser`, `FileAnalysis`, RepositoryParser | Single AST pass; emit all structured facts |
 | Graph | `GraphBuilder`, `GraphResult`, `GraphAdapter` | Domain graph; bridge to NetworkX |
-| Algorithms | `CycleDetector`, `AlgorithmEngine` | Operate on `nx.DiGraph` only — no `GraphResult` |
+| Algorithms | `CycleDetector`, `AlgorithmEngine`, `ImpactAnalyzer` | Operate on `nx.DiGraph` only — no `GraphResult`; impact is on-demand, not batch |
 | Pipeline | `AnalysisPipeline`, `PipelineResult` | Orchestrate parse → graph → adapter → algorithms |
 
 ### Design decisions
@@ -440,13 +454,14 @@ PipelineResult            analyses + graph + cycles + scores
 6. **`GraphAdapter` is the single NetworkX conversion point** — Ripple owns `GraphResult`; NetworkX is an implementation detail. The adapter converts once per pipeline run; all algorithms share the same `DiGraph`. Conversion only — no algorithm logic in the adapter.
 7. **`CycleDetector` is a separate algorithm unit** — takes `nx.DiGraph`, uses NetworkX `simple_cycles`, normalizes rotations, returns `CircularDependencyResult`. Wired into `AnalysisPipeline` as `PipelineResult.cycles`; unit-tested in isolation (`tests/algorithms/test_cycles.py`, 8 cases). Detail: [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection).
 8. **`AlgorithmEngine` scores criticality** — takes the shared `nx.DiGraph`; PageRank = how depended-on (importance flows importer→imported); betweenness = bridge/bottleneck; criticality = `0.6 * norm(PR) + 0.4 * norm(BT)` relative change-risk; in/out degree = direct importers / imports. One untimed PageRank warm-up runs before the measured stage to exclude one-time SciPy/NetworkX backend initialization from benchmark timings. Wired as `PipelineResult.scores`; CLI prints top 10. Tests: `tests/algorithms/test_scoring.py` (13). Glossary: [learn.md — What each property means](./learn.md#1-what-each-property-means).
+9. **`ImpactAnalyzer` answers "what breaks if I change file F?"** — on-demand query, not a batch pipeline stage. Takes the shared `nx.DiGraph` plus optional `ScoringResult`; walks **predecessors** (reverse reachability: importer → imported, so dependents = who imports F). Uses `predecessors`, `ancestors`, and `single_source_shortest_path_length` on the reversed graph for hop-distance **layers** (each file in exactly one layer). Reuses existing `NodeScore` for the target — does not recompute criticality. Wired via `AnalysisStore` + `GET /api/impact/{repo_id}?file=...`. Temp dirs still cleaned after analyze; only in-memory `PipelineResult` is retained until process restart or PostgreSQL (planned). Tests: `tests/algorithms/test_impact.py` (8). Detail: [learn.md — Impact Analysis](./learn.md#phase-1-week-2--impact-analysis).
 
 ### Future scope
 
 | Version | Capabilities |
 |---------|----------------|
 | **V1 (current)** | File-level import graph (type: imports); cycles + criticality; JSON keeps class bases for V2 |
-| **V2** | Class graph (inheritance), function/call graphs, impact analysis, `external_deps` analytics |
+| **V2** | Class graph (inheritance), function/call graphs, `external_deps` analytics |
 | **V3** | AI-assisted explanations, architectural insights, change-risk estimation |
 
 **Why V1 does not emit `type: "inherits"` edges:** the parser records base **names** (`ClassInfo.bases`), not resolved class/file targets; inheritance is class→class while V1 nodes are file paths; reliable edges need a base resolver and class-level node IDs (`ClassGraphBuilder`). The JSON edge object shape is already extensible. Detail: [learn.md — Why not `type: "inherits"` yet](./learn.md#why-not-type-inherits-or-calls-yet).
@@ -653,7 +668,9 @@ cd backend && source .venv/bin/activate
 PYTHONPATH=. pytest tests/test_api.py -v
 ```
 
-**Future (Phase 2):** Return `202 Accepted` with `repo_id` + `status: "processing"`, persist to PostgreSQL, poll `GET /api/status/{repo_id}`.
+**Future (Phase 2):** Return `202 Accepted` with `repo_id` + `status: "processing"`, persist to PostgreSQL, poll `GET /api/status/{repo_id}`. Impact queries will use the same `repo_id` and response shape as today.
+
+See also: [GET /api/impact/{repo_id}](#get-apiimpactrepo_id) (shipped).
 
 ```
 Response 202 Accepted (planned):
@@ -736,24 +753,67 @@ Response 200:
 - Response 404: repo not found
 - Response 409: analysis not yet complete
 
-### GET /api/impact/{repo_id}?file={file_path}
-Returns impact analysis for a specific file.
+### GET /api/impact/{repo_id}
+
+On-demand blast-radius for one file in a **previously analyzed** repository. Uses in-memory `AnalysisStore` keyed by `job_id` from `POST /api/analyze` (PostgreSQL persistence planned). Does not re-parse source or rebuild the graph.
+
+Full field reference: [SRS §8 — GET /api/impact/{repo_id}](./SRS_ProjectPlan.md#get-apiimpactrepo_id).
 
 ```
+Path params:
+  repo_id: job_id returned by POST /api/analyze
+
 Query params:
-  file: "auth/session.py"   (URL-encoded)
+  file: "mini_repo/myapp/models.py"   (URL-encoded repo-relative path)
 
 Response 200:
 {
-  "target_file": "auth/session.py",
-  "composite_score": 0.87,
-  "direct_dependents": ["api/routes.py", "tests/test_auth.py"],
-  "all_dependents": ["api/routes.py", "tests/test_auth.py", "main.py"],
-  "direct_count": 2,
-  "total_count": 3
+  "target": {
+    "file": "mini_repo/myapp/models.py",
+    "score": {
+      "pagerank": 0.3124,
+      "betweenness": 0.0,
+      "criticality": 0.6,
+      "in_degree": 1,
+      "out_degree": 1
+    }
+  },
+  "direct_dependents": ["mini_repo/myapp/utils.py"],
+  "indirect_dependents": ["mini_repo/myapp/auth.py"],
+  "layers": [
+    { "depth": 1, "files": ["mini_repo/myapp/utils.py"] },
+    { "depth": 2, "files": ["mini_repo/myapp/auth.py"] }
+  ],
+  "summary": {
+    "direct": 1,
+    "indirect": 1,
+    "total": 2,
+    "max_depth": 2,
+    "files_affected_percentage": 50.0
+  }
 }
 
-Response 404: file not found in this repo's graph
+Response 400: missing or empty `file` query parameter
+Response 404: repository analysis not found (unknown repo_id)
+Response 404: file not in graph (unknown or out-of-repo path)
+```
+
+**Manual test (server running on port 8000):**
+
+```bash
+# Analyze first; capture job_id
+JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+
+curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" | python3 -m json.tool
+```
+
+**pytest:**
+
+```bash
+cd backend && source .venv/bin/activate
+PYTHONPATH=. pytest tests/algorithms/test_impact.py -v    # ImpactAnalyzer (8)
+PYTHONPATH=. pytest tests/test_api.py -k impact -v         # API integration (3)
 ```
 
 ### GET /api/repos
@@ -968,10 +1028,10 @@ Complete trace from zip upload or GitHub URL to graph appearing on screen.
          │
          ▼
 17. FastAPI:
-    - Load graph from PostgreSQL into NetworkX
-    - ancestors = nx.ancestors(G, "auth/session.py")
-    - predecessors = list(G.predecessors("auth/session.py"))
-    - Return impact result
+    - Load PipelineResult from AnalysisStore (PostgreSQL planned)
+    - GraphAdapter → nx.DiGraph (reuse stored graph + scores)
+    - ImpactAnalyzer.analyze(digraph, file, scores=result.scores)
+    - Return impact result (target, direct/indirect dependents, labeled layers, summary)
          │
          ▼
 18. Frontend highlights:
@@ -1094,9 +1154,11 @@ One table for every way to run something with **your own input** (repo path, fil
 | Per-stage timings | directory | `python -m app.benchmark --repo {repo-path}` | All stages + timing table |
 | Zip → extract → analyze | zip file | `curl -F file=@…zip …/api/analyze` or pytest — see [Ingestion](#ingestion-zip-and-github) | extract, then pipeline |
 | GitHub → clone → analyze | public repo URL | `curl -F github_url=https://github.com/owner/repo …/api/analyze` | clone, then pipeline |
+| Impact for one file | `job_id` + file path | `curl "…/api/impact/{job_id}?file=path/to/file.py"` | on-demand blast radius (after analyze) |
+| Impact unit tests | (synthetic graphs) | `PYTHONPATH=. pytest tests/algorithms/test_impact.py -v` | layers, cycles, score lookup |
 | Zip ingestion tests | (pytest builds zips) | `PYTHONPATH=. pytest tests/test_ingestion.py -v` | extract, zip-slip, cleanup |
 | GitHub ingestion tests | (mocked + 1 live clone) | `PYTHONPATH=. pytest tests/test_github_ingestion.py -v` | URL parse, clone, cleanup |
-| API tests | zip + GitHub | `PYTHONPATH=. pytest tests/test_api.py -v` | HTTP → pipeline → cleanup |
+| API tests | zip + GitHub + impact | `PYTHONPATH=. pytest tests/test_api.py -v` | HTTP → pipeline → cleanup; impact endpoint |
 | Run automated tests | (pytest fixtures) | `PYTHONPATH=. pytest tests/ -v` | Varies by test file |
 
 **Examples with the built-in fixture** (swap `tests/fixtures/mini_repo` for your repo):
@@ -1128,6 +1190,7 @@ Parser, pipeline, and benchmark all take a **project root directory**. You do no
 | `pagerank_computation` | Yes | `python -m app.benchmark --repo {repo-path}` |
 | `betweenness_computation` | Yes | Same benchmark command |
 | `score_normalization` | Yes | Same benchmark command |
+| `impact_analysis` | On-demand only | `GET /api/impact/{job_id}?file=…` or `ImpactAnalyzer().analyze(digraph, file)` |
 | Zip extract | No | `IngestionService.ingest_zip*` or `pytest tests/test_ingestion.py` |
 | Git clone | No | `IngestionService.ingest_github` or `pytest tests/test_github_ingestion.py` |
 
@@ -1236,7 +1299,7 @@ cd backend
 source .venv/bin/activate
 PYTHONPATH=. pytest tests/test_ingestion.py -v          # zip (8)
 PYTHONPATH=. pytest tests/test_github_ingestion.py -v   # GitHub (17)
-PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP (11)
+PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP analyze + impact (14)
 ```
 
 Skip the live GitHub clone in CI or offline runs:
@@ -1282,6 +1345,11 @@ curl -s -X POST http://localhost:8000/api/analyze \
 # GitHub (requires git on server)
 curl -s -X POST http://localhost:8000/api/analyze \
   -F "github_url=https://github.com/pypa/sampleproject" | python3 -m json.tool
+
+# Impact (after analyze — use job_id from response)
+JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" | python3 -m json.tool
 ```
 
 **Note (zip):** if the zip contains a top-level folder (e.g. `myproject/...`), paths in the graph will include that prefix unless you point the pipeline at the inner root.
@@ -1324,7 +1392,7 @@ source .venv/bin/activate
 PYTHONPATH=. pytest tests/ -v
 ```
 
-Runs all **83** tests. `-v` prints one line per test (`PASSED` / `FAILED`).
+Runs all **139** tests. `-v` prints one line per test (`PASSED` / `FAILED`).
 
 #### Run one suite (full commands)
 
@@ -1338,10 +1406,12 @@ PYTHONPATH=. pytest tests/test_adapter.py -v     # GraphAdapter (4)
 PYTHONPATH=. pytest tests/test_pipeline.py -v    # AnalysisPipeline on temp repos + mini_repo (9)
 PYTHONPATH=. pytest tests/test_ingestion.py -v   # zip extract + pipeline (8)
 PYTHONPATH=. pytest tests/test_benchmark.py -v   # stage metrics + benchmark notes (16)
-PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export shape (14)
+PYTHONPATH=. pytest tests/test_serialize.py -v   # JSON export shape (18)
 PYTHONPATH=. pytest tests/algorithms/test_cycles.py -v    # CycleDetector (8)
 PYTHONPATH=. pytest tests/algorithms/test_scoring.py -v    # AlgorithmEngine (13)
-PYTHONPATH=. pytest tests/algorithms/ -v         # cycles + scoring (21)
+PYTHONPATH=. pytest tests/algorithms/test_impact.py -v     # ImpactAnalyzer (8)
+PYTHONPATH=. pytest tests/algorithms/ -v         # cycles + scoring + impact (29)
+PYTHONPATH=. pytest tests/test_api.py -v         # analyze + impact API (14)
 ```
 
 See [Command sheet](#command-sheet-all-inputs) for which pytest file maps to which capability. Zip-specific tests are **only** in `test_ingestion.py` (no zip CLI exists yet).

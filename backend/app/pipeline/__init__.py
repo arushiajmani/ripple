@@ -5,9 +5,12 @@ from app.pipeline.serialize import (
     pipeline_result_to_json,
     write_pipeline_json,
 )
+from app.pipeline.store import AnalysisNotFoundError, AnalysisStore
 
 __all__ = [
+    "AnalysisNotFoundError",
     "AnalysisPipeline",
+    "AnalysisStore",
     "PipelineResult",
     "StageMetric",
     "pipeline_result_to_dict",

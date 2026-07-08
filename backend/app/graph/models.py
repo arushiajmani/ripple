@@ -77,3 +77,56 @@ class ScoringResult:
     def top(self, n: int = 10) -> list[NodeScore]:
         """Highest-criticality files (default top 10)."""
         return self.scores[:n]
+
+
+@dataclass
+class ImpactLayer:
+    """One hop-distance tier in the blast radius."""
+
+    depth: int
+    files: list[str]
+
+
+@dataclass
+class ImpactSummary:
+    """Counts and percentage derived from direct and indirect dependents."""
+
+    direct: int
+    indirect: int
+    total: int
+    max_depth: int
+    files_affected_percentage: float
+
+
+@dataclass
+class ImpactTarget:
+    """Queried file and its existing batch score (if available)."""
+
+    file: str
+    score: NodeScore | None = None
+
+
+@dataclass
+class ImpactAnalysisResult:
+    """On-demand blast-radius for one file in an already-built import graph.
+
+    Edge direction is importer → imported. Dependents are found by walking
+    predecessors (reverse reachability): files that import the target, directly
+    or transitively.
+
+    Attributes:
+        target: Queried file path and optional existing ``NodeScore``.
+        direct_dependents: Immediate importers (hop distance 1), sorted.
+        indirect_dependents: Indirect importers only (depth 2+), sorted.
+            Does not include ``direct_dependents``.
+        layers: Blast radius by hop distance; each file appears in exactly one
+            layer. ``depth`` 1 = direct importers.
+        summary: ``direct``, ``indirect``, ``total``, ``max_depth``, and
+            ``files_affected_percentage`` (3 decimal places).
+    """
+
+    target: ImpactTarget
+    direct_dependents: list[str]
+    indirect_dependents: list[str]
+    layers: list[ImpactLayer]
+    summary: ImpactSummary
