@@ -42,15 +42,6 @@ def ingestion_base_dir(tmp_path: Path) -> Path:
     return tmp_path / "ripple"
 
 
-@pytest.fixture
-def client(ingestion_base_dir: Path) -> TestClient:
-    from app.pipeline.store import AnalysisStore
-
-    app.state.ingestion_base_dir = ingestion_base_dir
-    app.state.analysis_store = AnalysisStore()
-    return TestClient(app)
-
-
 def test_analyze_zip_returns_complete_result(client: TestClient) -> None:
     response = client.post(
         "/api/analyze",
