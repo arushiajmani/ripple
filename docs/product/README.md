@@ -29,7 +29,7 @@ Ripple statically analyzes a repository, builds a dependency graph, and applies 
 | Impact analysis | [backend/graph-builder.md](../backend/graph-builder.md#impact-analysis) |
 | REST API (partial) | [backend/api.md](../backend/api.md) |
 | PostgreSQL persistence | [backend/persistence.md](../backend/persistence.md) |
-| Interactive graph UI | Planned — `frontend/` docs when built |
+| Interactive graph UI | [frontend/](../frontend/) — MVP-1 shipped |
 
 ### Out of scope (MVP)
 
@@ -65,11 +65,19 @@ Docker Compose (backend, db, frontend), health endpoint, Vite scaffold.
 | **Job APIs** (`GET /jobs/{job_id}`, history) | Planned — [api-resources.md](../architecture/api-resources.md) |
 | Async 202 + `GET /api/status` | Planned (after repo-centric) |
 
-### Phase 3 — Frontend (not started)
+### Phase 3 — Frontend (MVP-1 shipped)
 
-Cytoscape graph, sidebar (critical files, impact, cycles), upload flow, polling.
+Cytoscape graph, file detail panel, critical files, import flow. Docs: [frontend/](../frontend/).
 
-Future docs will live under `docs/frontend/` (e.g. `graph-visualization.md`).
+| Item | Status |
+|------|--------|
+| Landing + import + repo list | ✓ |
+| Workspace shell + overview | ✓ |
+| Dependency graph (Cytoscape) | ✓ |
+| File detail side panel | ✓ |
+| Critical files table | ✓ |
+| Impact, cycles, explorer, command palette | MVP-2 |
+| Architecture charts, settings | MVP-2/3 |
 
 ## Version ladder
 

@@ -1,0 +1,50 @@
+:root {
+  --color-bg: #fdfbf7;
+  --color-surface: #ffffff;
+  --color-text: #2f3e46;
+  --color-text-muted: #5b6b73;
+  --color-accent: #52796f;
+  --color-accent-light: #84a98c;
+  --color-accent-muted: #cad2c5;
+  --color-border: #e9e5dd;
+  --color-hover: #f5f1ea;
+  --color-selection: rgba(82, 121, 111, 0.12);
+  --color-success: #588157;
+  --color-warning: #d4a017;
+  --color-error: #c14953;
+
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+
+  --shadow-sm: 0 1px 2px rgba(47, 62, 70, 0.04);
+  --shadow-md: 0 4px 12px rgba(47, 62, 70, 0.06);
+
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  --sidebar-width: 240px;
+  --header-height: 56px;
+  --panel-width: 380px;
+}

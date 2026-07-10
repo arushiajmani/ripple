@@ -8,6 +8,7 @@ Ripple is a Python dependency analysis platform: parse repositories, build impor
 |------------|-------|
 | Run the project locally | [Getting started](getting-started/README.md) |
 | Understand a backend module | [Backend](backend/) |
+| Understand a frontend feature | [Frontend](frontend/) |
 | See architecture decisions | [Architecture](architecture/README.md) |
 | API resource model (repo vs job) | [API resources](architecture/api-resources.md) |
 | Copy-paste commands | [CLI reference](development/cli-reference.md) |
@@ -16,6 +17,21 @@ Ripple is a Python dependency analysis platform: parse repositories, build impor
 | Roadmap, requirements, interviews | [Product](product/README.md) |
 | Implement repo-centric API | [Repo-centric API plan](product/repo-centric-api-plan.md) |
 | Why two POST analyze endpoints? | [API — Two ways to analyze](backend/api.md#two-ways-to-analyze) |
+
+## Frontend features
+
+| Doc | What it covers |
+|-----|----------------|
+| [Product design](frontend/product-design.md) | Vision, personas, IA, API gaps |
+| [Design system](frontend/design-system.md) | Tokens, primitives, data colors |
+| [API client](frontend/api-client.md) | Fetch layer, React Query, endpoint mapping |
+| [Import flow](frontend/import-flow.md) | Landing, upload, processing |
+| [Workspace shell](frontend/workspace-shell.md) | Layout, nav, routing |
+| [Overview](frontend/overview.md) | Repository story, health heuristics |
+| [Dependency graph](frontend/dependency-graph.md) | Cytoscape flagship view |
+| [File detail](frontend/file-detail.md) | Selected file side panel |
+| [Critical files](frontend/critical-files.md) | Ranked criticality table |
+| [State management](frontend/state-management.md) | Query cache, selection context |
 
 ## Backend modules
 
@@ -52,7 +68,7 @@ Ripple is a Python dependency analysis platform: parse repositories, build impor
 Every [backend module doc](backend/) starts with a standard header:
 
 - **Status** — Implemented, Partial, or Planned
-- **Owner** — Backend (frontend docs will use `frontend/` when added)
+- **Owner** — Backend (frontend docs use `Frontend`)
 - **Last Updated** — date of last substantive edit
 - **Related components**, **Tests**, **Source files**
 

@@ -15,7 +15,7 @@ from app.pipeline.store import AnalysisStore
 router = APIRouter()
 
 
-@router.post("/api/analyze")
+@router.post("/api/analyze", summary="Quick Analysis", tags=["Analysis"])
 async def analyze(
     file: UploadFile | None = File(default=None),
     github_url: str | None = Form(default=None),

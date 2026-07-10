@@ -110,7 +110,7 @@ def repo_detail_response(repo: Repository, job: AnalysisJob, stats: AnalysisStat
     }
 
 
-@router.post("/api/repos/analyze")
+@router.post("/api/repos/analyze", summary="Repository Analysis", tags=["Analysis"])
 async def analyze_repo(
     file: UploadFile | None = File(default=None),
     github_url: str | None = Form(default=None),

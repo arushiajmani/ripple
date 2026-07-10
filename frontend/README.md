@@ -1,16 +1,56 @@
-# React + Vite
+# Ripple Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React workspace for exploring analyzed Python repositories.
 
-Currently, two official plugins are available:
+## Quick start
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+# Terminal 1 — backend
+cd backend && source .venv/bin/activate
+uvicorn app.main:app --reload
 
-## React Compiler
+# Terminal 2 — frontend
+cd frontend && npm install && npm run dev
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Open http://localhost:5173 — API requests proxy to http://localhost:8000.
 
-## Expanding the ESLint configuration
+Or with Docker:
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+docker compose up --build
+# Frontend http://localhost:5173 · Backend http://localhost:8000
+```
+
+## Documentation
+
+Feature docs mirror the backend layout: [docs/frontend/](../docs/frontend/README.md)
+
+| Doc | Topic |
+|-----|-------|
+| [product-design.md](../docs/frontend/product-design.md) | Vision, IA, API gaps |
+| [design-system.md](../docs/frontend/design-system.md) | Tokens, primitives |
+| [api-client.md](../docs/frontend/api-client.md) | Fetch + React Query |
+| [import-flow.md](../docs/frontend/import-flow.md) | Landing, upload |
+| [workspace-shell.md](../docs/frontend/workspace-shell.md) | Nav, routing |
+| [overview.md](../docs/frontend/overview.md) | Repository story |
+| [dependency-graph.md](../docs/frontend/dependency-graph.md) | Cytoscape graph |
+| [file-detail.md](../docs/frontend/file-detail.md) | File side panel |
+| [critical-files.md](../docs/frontend/critical-files.md) | Ranked table |
+
+## Stack
+
+- React 19 + Vite 8
+- React Router 7
+- TanStack Query
+- Cytoscape.js + fcose layout
+- Lucide icons
+
+## Scripts
+
+| Command | Purpose |
+|---------|---------|
+| `npm run dev` | Dev server (port 5173) |
+| `npm run build` | Production build |
+| `npm run lint` | ESLint |
+| `npm run preview` | Preview production build |

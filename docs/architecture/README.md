@@ -55,7 +55,8 @@ Full matrix and rollout: [api-resources.md](api-resources.md).
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│  FRONTEND (React + Cytoscape.js) — planned visualization    │
+│  FRONTEND (React + Cytoscape.js) — MVP-1 shipped            │
+│  docs/frontend/ · landing → import → workspace              │
 └─────────────────────────┬───────────────────────────────────┘
                           │ HTTP
 ┌─────────────────────────▼───────────────────────────────────┐
