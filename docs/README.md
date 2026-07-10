@@ -9,10 +9,13 @@ Ripple is a Python dependency analysis platform: parse repositories, build impor
 | Run the project locally | [Getting started](getting-started/README.md) |
 | Understand a backend module | [Backend](backend/) |
 | See architecture decisions | [Architecture](architecture/README.md) |
+| API resource model (repo vs job) | [API resources](architecture/api-resources.md) |
 | Copy-paste commands | [CLI reference](development/cli-reference.md) |
 | Look up schemas or terms | [Reference](reference/) |
 | Walk through a real repo | [Examples](examples/) |
 | Roadmap, requirements, interviews | [Product](product/README.md) |
+| Implement repo-centric API | [Repo-centric API plan](product/repo-centric-api-plan.md) |
+| Why two POST analyze endpoints? | [API — Two ways to analyze](backend/api.md#two-ways-to-analyze) |
 
 ## Backend modules
 
@@ -22,7 +25,7 @@ Ripple is a Python dependency analysis platform: parse repositories, build impor
 | [Graph builder](backend/graph-builder.md) | `GraphBuilder`, `GraphAdapter`, cycles, scoring, impact |
 | [Pipeline](backend/pipeline.md) | `AnalysisPipeline`, JSON export, benchmark CLI |
 | [Ingestion](backend/ingestion.md) | Zip upload, GitHub clone, `IngestionService` |
-| [API](backend/api.md) | REST endpoints (`/api/analyze`, `/api/impact`) |
+| [API](backend/api.md) | REST endpoints (current + [planned repo-centric API](product/repo-centric-api-plan.md)) |
 | [Persistence](backend/persistence.md) | PostgreSQL schema, Alembic, `persist.py` |
 
 ## Reference

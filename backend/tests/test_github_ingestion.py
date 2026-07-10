@@ -7,7 +7,6 @@ Run from backend/:
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
@@ -22,29 +21,10 @@ from app.ingestion import (
 from app.ingestion.github import GitHubIngestion
 from app.pipeline import AnalysisPipeline
 
-FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_repo"
+from tests.support import FIXTURE_ROOT, FailingCloner, StubCloner, StubRemoteChecker
+
 INTEGRATION_REPO_URL = "https://github.com/pypa/sampleproject"
 INTEGRATION_REPO_PYTHON_FILE = "src/sample/__init__.py"
-
-
-class FakeRemoteChecker:
-    def __init__(self, *, exists: bool = True) -> None:
-        self.exists = exists
-        self.checked_urls: list[str] = []
-
-    def repo_exists(self, clone_url: str) -> bool:
-        self.checked_urls.append(clone_url)
-        return self.exists
-
-
-class FakeCloner:
-    def __init__(self, source_dir: Path) -> None:
-        self.source_dir = source_dir
-        self.calls: list[tuple[str, Path]] = []
-
-    def clone(self, clone_url: str, dest: Path) -> None:
-        self.calls.append((clone_url, dest))
-        shutil.copytree(self.source_dir, dest, dirs_exist_ok=True)
 
 
 @pytest.fixture
@@ -53,20 +33,20 @@ def base_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def fake_checker() -> FakeRemoteChecker:
-    return FakeRemoteChecker(exists=True)
+def fake_checker() -> StubRemoteChecker:
+    return StubRemoteChecker(exists=True)
 
 
 @pytest.fixture
-def fake_cloner() -> FakeCloner:
-    return FakeCloner(FIXTURE_ROOT)
+def fake_cloner() -> StubCloner:
+    return StubCloner(FIXTURE_ROOT)
 
 
 @pytest.fixture
 def github_service(
     base_dir: Path,
-    fake_checker: FakeRemoteChecker,
-    fake_cloner: FakeCloner,
+    fake_checker: StubRemoteChecker,
+    fake_cloner: StubCloner,
 ) -> IngestionService:
     return IngestionService(
         base_dir=base_dir,
@@ -114,8 +94,8 @@ def test_parse_github_url_rejects_invalid_urls(url: str) -> None:
 def test_ingest_github_clones_to_job_directory(
     github_service: IngestionService,
     base_dir: Path,
-    fake_checker: FakeRemoteChecker,
-    fake_cloner: FakeCloner,
+    fake_checker: StubRemoteChecker,
+    fake_cloner: StubCloner,
 ) -> None:
     result = github_service.ingest_github(
         "https://github.com/example/mini-repo",
@@ -134,11 +114,11 @@ def test_ingest_github_clones_to_job_directory(
 
 
 def test_ingest_github_rejects_missing_repository(
-    base_dir: Path, fake_cloner: FakeCloner
+    base_dir: Path, fake_cloner: StubCloner
 ) -> None:
     service = IngestionService(
         base_dir=base_dir,
-        remote_checker=FakeRemoteChecker(exists=False),
+        remote_checker=StubRemoteChecker(exists=False),
         cloner=fake_cloner,
     )
 
@@ -152,15 +132,10 @@ def test_ingest_github_rejects_missing_repository(
 def test_ingest_github_removes_partial_directory_on_clone_failure(
     base_dir: Path,
 ) -> None:
-    class FailingCloner:
-        def clone(self, clone_url: str, dest: Path) -> None:
-            (dest / "partial.txt").write_text("partial")
-            raise CloneError("clone failed")
-
     service = IngestionService(
         base_dir=base_dir,
-        remote_checker=FakeRemoteChecker(exists=True),
-        cloner=FailingCloner(),
+        remote_checker=StubRemoteChecker(exists=True),
+        cloner=FailingCloner("clone failed", write_partial=True),
     )
 
     with pytest.raises(CloneError, match="clone failed"):

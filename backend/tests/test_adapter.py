@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import networkx as nx
 
-from app.graph import GraphAdapter, GraphBuilder, GraphResult, graph_result_to_digraph
+from app.graph import GraphAdapter, GraphBuilder, GraphResult
 from app.parser.models import FileAnalysis
 
 
@@ -45,16 +45,3 @@ def test_from_graph_builder_output() -> None:
 
     assert list(digraph.nodes) == sorted(analyses)
     assert ("a.py", "hub.py") in digraph.edges
-
-
-def test_graph_result_to_digraph_wrapper_matches_adapter() -> None:
-    graph = GraphResult(
-        nodes=["x.py", "y.py"],
-        edges=[("x.py", "y.py")],
-    )
-
-    wrapper = graph_result_to_digraph(graph)
-    adapter = GraphAdapter().to_digraph(graph)
-
-    assert list(wrapper.nodes) == list(adapter.nodes)
-    assert list(wrapper.edges) == list(adapter.edges)

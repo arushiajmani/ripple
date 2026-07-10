@@ -8,6 +8,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
+from app.ingestion.exceptions import UnsafeArchiveError
 from app.ingestion.models import RepositoryHandle
 
 
@@ -88,7 +89,9 @@ class ZipIngestion:
                 continue
             target = (dest_root / member.filename).resolve()
             if not _is_within_directory(dest_root, target):
-                raise ValueError(f"Unsafe path in zip archive: {member.filename!r}")
+                raise UnsafeArchiveError(
+                    f"Unsafe path in zip archive: {member.filename!r}"
+                )
         archive.extractall(dest_root)
 
 

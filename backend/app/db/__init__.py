@@ -6,7 +6,7 @@ clean for API code and Alembic, which only needs to import the package to
 register all table definitions on `Base.metadata`.
 """
 
-from app.db.context import RepositoryPersistContext
+from app.db.context import PersistResult, RepositoryPersistContext
 from app.db.load import load_pipeline_result
 from app.db.models import (
     SCHEMA_TABLES,
@@ -24,6 +24,7 @@ from app.db.persist import persist_pipeline_result
 
 __all__ = [
     "SCHEMA_TABLES",
+    "PersistResult",
     "RepositoryPersistContext",
     "load_pipeline_result",
     "persist_pipeline_result",

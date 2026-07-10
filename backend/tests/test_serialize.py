@@ -12,7 +12,7 @@ from pathlib import Path
 
 from app.pipeline import AnalysisPipeline, pipeline_result_to_dict
 
-FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_repo"
+from tests.support import FIXTURE_ROOT
 
 # Fixed timestamp so dict equality tests are deterministic.
 FIXED_AT = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)

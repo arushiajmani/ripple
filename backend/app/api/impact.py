@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy.orm import Session
 
 from app.db.load import load_pipeline_result
+from app.db.queries import get_latest_completed_job
 from app.graph.adapter import GraphAdapter
 from app.graph.algorithms.impact import ImpactAnalyzer
 from app.graph.models import ImpactAnalysisResult
@@ -21,7 +24,7 @@ def analyze_file_impact(
     analyzer: ImpactAnalyzer | None = None,
 ) -> ImpactAnalysisResult:
     """Run impact analysis for one file using stored or persisted pipeline artifacts."""
-    result = _resolve_pipeline_result(store, repo_id, session=session)
+    result = resolve_pipeline_result(store, repo_id, session=session)
     return analyze_file_impact_from_result(
         result,
         file_path,
@@ -29,21 +32,35 @@ def analyze_file_impact(
     )
 
 
-def _resolve_pipeline_result(
+def resolve_pipeline_result(
     store: AnalysisStore,
     repo_id: str,
     *,
     session: Session | None = None,
 ) -> PipelineResult:
+    """Resolve artifacts by ``repositories.id`` (latest completed job).
+
+    Shared by the impact, graph, and scores endpoints: checks the in-process
+    cache first, then loads the latest completed job from PostgreSQL. Raises
+    ``AnalysisNotFoundError`` (→ 404) when the id is not a UUID or no completed
+    analysis exists.
+    """
     cached = store.get(repo_id)
     if cached is not None:
         return cached
 
+    try:
+        repo_uuid = uuid.UUID(repo_id)
+    except ValueError as exc:
+        raise AnalysisNotFoundError(f"Repository analysis not found: {repo_id}") from exc
+
     if session is not None:
-        loaded = load_pipeline_result(session, repo_id)
-        if loaded is not None:
-            store.save(repo_id, loaded)
-            return loaded
+        job = get_latest_completed_job(session, repo_uuid)
+        if job is not None:
+            loaded = load_pipeline_result(session, str(job.id))
+            if loaded is not None:
+                store.save(repo_id, loaded)
+                return loaded
 
     raise AnalysisNotFoundError(f"Repository analysis not found: {repo_id}")
 

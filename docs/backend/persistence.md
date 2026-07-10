@@ -4,7 +4,7 @@
 |---|---|
 | **Status** | Partial (schema + sync write on analyze shipped; async 202 + status poll planned) |
 | **Owner** | Backend |
-| **Last Updated** | 2026-07-08 |
+| **Last Updated** | 2026-07-10 |
 
 **Related components:** [Pipeline](pipeline.md) · [API](api.md)
 
@@ -21,11 +21,11 @@ PostgreSQL stores analysis artifacts. ORM models mirror 8 SRS tables; Alembic ma
 **Shipped today:**
 
 - `alembic upgrade head` creates schema
-- `POST /api/analyze` writes `PipelineResult` via `app/db/persist.py`
-- `GET /api/impact` can load from DB after server restart (`app/db/load.py`)
-- `AnalysisStore` still caches in memory for the current process
+- `POST /api/analyze` and `POST /api/repos/analyze` write `PipelineResult` via `app/db/persist.py`
+- `GET /api/repos/{repo_id}/graph|scores|impact` load from memory or DB via `app/db/load.py`
+- `AnalysisStore` caches by `repo_id` for the current process
 
-**Not yet:** async `202`, `GET /api/status`, idempotent zip re-upload cache.
+**Not yet:** Job APIs (Phase 3), async `202`, `GET /api/status`, idempotent zip re-upload cache.
 
 Full table definitions: [reference/database-schema.md](../reference/database-schema.md).
 
@@ -35,12 +35,12 @@ Full table definitions: [reference/database-schema.md](../reference/database-sch
 Today (sync analyze):
   Ingest → Pipeline → PipelineResult
        → persist to PostgreSQL
-       → AnalysisStore.save(job_id, result)
+       → AnalysisStore.save(repo_id, result)
        → return JSON 200
        → cleanup temp dir
 
 Impact query:
-  AnalysisStore (memory) or load from DB if store miss
+  AnalysisStore (memory, keyed by repo_id) or load from DB via latest job
 ```
 
 Planned async flow: `202` → background persist → poll `GET /api/status/{job_id}`.
@@ -91,7 +91,12 @@ pytest tests/test_db_schema.py -v    # ORM metadata, no live DB
 pytest tests/test_db_persist.py -v   # write path
 ```
 
+## API integration
+
+`persist_pipeline_result()` returns `PersistResult(repository_id, job_id)`. Phase 1 repo-centric routes expose `repository_id` as `repo_id` in JSON.
+
 ## Further reading
 
+- [product/repo-centric-api-plan.md](../product/repo-centric-api-plan.md)
 - [CLI reference — Database operations](../development/cli-reference.md#database-operations)
 - [reference/database-schema.md](../reference/database-schema.md)

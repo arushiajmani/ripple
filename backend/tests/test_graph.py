@@ -3,27 +3,13 @@ from __future__ import annotations
 import pytest
 
 from app.graph import GraphBuilder
-from app.parser.models import FileAnalysis
+
+from tests.support import make_file
 
 
 @pytest.fixture
 def builder() -> GraphBuilder:
     return GraphBuilder()
-
-
-def make_file(
-    file_path: str,
-    *,
-    resolved_deps: list[str] | None = None,
-    external_deps: list[str] | None = None,
-    has_syntax_error: bool = False,
-) -> FileAnalysis:
-    return FileAnalysis(
-        file_path=file_path,
-        resolved_deps=resolved_deps or [],
-        external_deps=external_deps or [],
-        has_syntax_error=has_syntax_error,
-    )
 
 
 def test_empty_repository(builder: GraphBuilder) -> None:

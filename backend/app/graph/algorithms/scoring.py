@@ -68,10 +68,15 @@ class AlgorithmEngine:
         pagerank_alpha: float = PAGERANK_ALPHA,
         pagerank_weight: float = PAGERANK_WEIGHT,
         betweenness_weight: float = BETWEENNESS_WEIGHT,
+        warmup_pagerank: bool = False,
     ) -> None:
         self._pagerank_alpha = pagerank_alpha
         self._pagerank_weight = pagerank_weight
         self._betweenness_weight = betweenness_weight
+        # An untimed PageRank warm-up only exists to keep cold-start NetworkX/
+        # SciPy init out of *benchmark* timings. It doubles PageRank work, so it
+        # is off by default and enabled explicitly by the benchmark CLI.
+        self._warmup_pagerank = warmup_pagerank
 
     def run(self, digraph: nx.DiGraph) -> ScoringResult:
         result, _metrics = self.run_with_metrics(digraph)
@@ -81,12 +86,15 @@ class AlgorithmEngine:
         self,
         digraph: nx.DiGraph,
         *,
-        warmup_pagerank: bool = True,
+        warmup_pagerank: bool | None = None,
     ) -> tuple[ScoringResult, list[StageMetric]]:
         if digraph.number_of_nodes() == 0:
             return ScoringResult(scores=[]), []
 
-        if warmup_pagerank:
+        do_warmup = (
+            self._warmup_pagerank if warmup_pagerank is None else warmup_pagerank
+        )
+        if do_warmup:
             nx.pagerank(digraph, alpha=self._pagerank_alpha)
 
         pr_start = time.perf_counter()

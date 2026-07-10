@@ -90,7 +90,7 @@
 | Unit tests in `tests/test_pipeline.py` | Yes (9 cases) |
 | Wire `CycleDetector` into pipeline | Yes |
 | Wire `AlgorithmEngine` into pipeline | Yes |
-| `ImpactAnalyzer` + `GET /api/impact/{repo_id}` | Yes |
+| `ImpactAnalyzer` + `GET /api/repos/{repo_id}/impact` | Yes |
 
 ### Checklist (database)
 
@@ -139,7 +139,7 @@ AnalysisStore + ImpactAnalyzer  ←  on-demand ImpactAnalysisResult (not batch)
 PostgreSQL / JSON / API / React
 ```
 
-**Shipped today:** Parser, `GraphBuilder`, `CycleDetector`, `AlgorithmEngine`, `ImpactAnalyzer`, `AnalysisPipeline` (parse → graph → cycles → scores), `IngestionService` (zip + GitHub), pipeline stage metrics, benchmark CLI, partial REST API (`POST /api/analyze` — sync zip or GitHub URL; `GET /api/impact/{repo_id}?file=...` — on-demand impact), PostgreSQL schema (Alembic + SQLAlchemy ORM for all 8 SRS tables). Async jobs and writing pipeline results to Postgres are still planned — the API uses in-memory `AnalysisStore`.
+**Shipped today:** Parser, `GraphBuilder`, `CycleDetector`, `AlgorithmEngine`, `ImpactAnalyzer`, `AnalysisPipeline` (parse → graph → cycles → scores), `IngestionService` (zip + GitHub), pipeline stage metrics, benchmark CLI, REST API (**Repository Analysis** + **Quick Analysis**; `GET /api/repos/{repo_id}/graph|scores|impact` — latest job), PostgreSQL persistence (Alembic + SQLAlchemy ORM, sync write on analyze). Async jobs (202 + poll) remain planned.
 
 `FileAnalysis` is intended to remain the **canonical source of parsed code information** for all current and future graph builders. Parse once; build many graph views from the same `dict[str, FileAnalysis]`.
 
@@ -1207,7 +1207,7 @@ GraphAdapter.to_digraph(GraphResult)
         ▼
 nx.DiGraph  (shared, built once per pipeline run)
         │
-        ├── untimed nx.pagerank (warm-up — excludes cold-start from metrics)
+        ├── untimed nx.pagerank (warm-up — benchmark CLI only; excludes cold-start)
         ├── nx.pagerank(alpha=0.85)  [timed]
         ├── nx.betweenness_centrality()  [timed]
         ├── in_degree / out_degree
@@ -1250,11 +1250,11 @@ PYTHONPATH=. pytest tests/algorithms/test_scoring.py -v
 
 1. `backend/app/graph/models.py` — `ImpactAnalysisResult`
 2. `backend/app/graph/algorithms/impact.py` — `ImpactAnalyzer`, `FileNotInGraphError`
-3. `backend/app/pipeline/store.py` — `AnalysisStore` (in-memory `PipelineResult` by `job_id`)
-4. `backend/app/api/impact.py` — `analyze_file_impact_from_result`
-5. `backend/tests/algorithms/test_impact.py` — 8 unit tests
+3. `backend/app/pipeline/store.py` — `AnalysisStore` (in-memory `PipelineResult` by `repo_id`)
+4. `backend/app/api/impact.py` — `resolve_pipeline_result`, `analyze_file_impact_from_result`
+5. `backend/tests/algorithms/test_impact.py` — 9 unit tests
 
-**Status:** Implemented and unit-tested. **Not** wired into `AnalysisPipeline` as a batch stage — invoked on demand via `GET /api/impact/{repo_id}?file=...` against stored pipeline artifacts. Temp ingest dirs are still cleaned after analyze; only in-memory results are kept until the Postgres write path lands (schema/migrations already shipped).
+**Status:** Implemented and unit-tested. **Not** wired into `AnalysisPipeline` as a batch stage — invoked on demand via `GET /api/repos/{repo_id}/impact?file=...` against stored pipeline artifacts (memory or PostgreSQL). Temp ingest dirs are cleaned after analyze; `AnalysisStore` caches by `repo_id`.
 
 ### 1. What each property means
 
@@ -1302,9 +1302,9 @@ class ImpactAnalysisResult:
 ### 3. Flow
 
 ```
-POST /api/analyze  →  PipelineResult  →  AnalysisStore.save(job_id, result)
+POST /api/repos/analyze  →  PipelineResult  →  AnalysisStore.save(repo_id, result)
                                               │
-GET /api/impact/{job_id}?file=F               │
+GET /api/repos/{repo_id}/impact?file=F        │
         │                                     │
         ▼                                     ▼
 GraphAdapter.to_digraph(stored.graph)   stored.scores (optional lookup)
@@ -1341,7 +1341,7 @@ PYTHONPATH=. pytest tests/algorithms/test_impact.py -v
 | `test_analyze_with_metrics_reports_stage_timing` | `StageMetric("impact_analysis", …)` |
 | `test_files_affected_percentage_rounded_to_three_decimals` | Percentage rounded to 3 dp |
 
-**API integration** (3 tests in `test_api.py`):
+**API integration** (impact tests in `test_api.py`):
 
 ```bash
 PYTHONPATH=. pytest tests/test_api.py -k impact -v
@@ -1352,9 +1352,9 @@ PYTHONPATH=. pytest tests/test_api.py -k impact -v
 ```bash
 cd backend && source .venv/bin/activate
 uvicorn app.main:app --reload &
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
-  -F "file=@tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
-curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" | python3 -m json.tool
+REPO_ID=$(curl -s -X POST http://localhost:8000/api/repos/analyze \
+  -F "file=@tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
+curl -s "http://localhost:8000/api/repos/${REPO_ID}/impact?file=mini_repo/myapp/models.py" | python3 -m json.tool
 ```
 
 ### 5. Try it yourself
@@ -1440,12 +1440,24 @@ Also listed under [Testing overview — Ingestion tests](#ingestion-tests).
 
 ### HTTP API
 
-**Status:** Partial — synchronous zip or GitHub URL for analyze; on-demand impact via stored results. No background jobs or DB yet. Requires **git** on the server for GitHub URLs. Full contracts: [SRS §8](./SRS_ProjectPlan.md#8-api-design) · [Architecture §6](./Architecture.md#6-api-contract).
+**Status:** Sync analyze (zip or GitHub URL); PostgreSQL persistence; repo-centric GETs. Async 202 + poll planned. Requires **git** on the server for GitHub URLs. Full contracts: [backend/api.md](./backend/api.md) · [SRS §8](./SRS_ProjectPlan.md#8-api-design).
 
-#### POST /api/analyze
+Two POST endpoints — same pipeline, different response. See [Two ways to analyze](./backend/api.md#two-ways-to-analyze).
+
+#### POST /api/repos/analyze — Repository Analysis
+
+Slim response (`repo_id`, `job_id`, `status`, `repository`). Preferred for UIs; load graph/scores/impact via `GET /api/repos/{repo_id}/…`.
 
 ```bash
-# Repo root — server running in backend/
+curl -s -X POST http://localhost:8000/api/repos/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -m json.tool
+```
+
+#### POST /api/analyze — Quick Analysis
+
+Full JSON inline (graph, scores, files). One-shot scripts and debugging.
+
+```bash
 curl -s -X POST http://localhost:8000/api/analyze \
   -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -m json.tool
 
@@ -1453,13 +1465,14 @@ curl -s -X POST http://localhost:8000/api/analyze \
   -F "github_url=https://github.com/pypa/sampleproject" | python3 -m json.tool
 ```
 
-Flow: ingest → `AnalysisPipeline.run(local_path)` → `AnalysisStore.save(job_id, result)` → `cleanup()` (temp dir removed, always via `finally`). Provide **either** `file` or `github_url`, not both.
+Flow (both endpoints): ingest → `AnalysisPipeline.run(local_path)` → persist → `AnalysisStore.save(repo_id, result)` → `cleanup()`. Provide **either** `file` or `github_url`, not both.
 
 | Check | Command |
 |-------|---------|
 | Health | `curl http://localhost:8000/health` |
-| Zip upload | `curl -s -X POST …/api/analyze -F "file=@…zip" \| python3 -m json.tool` |
-| GitHub URL | `curl -s -X POST …/api/analyze -F "github_url=https://github.com/owner/repo" \| python3 -m json.tool` |
+| Repository Analysis | `curl -s -X POST …/api/repos/analyze -F "file=@…zip" \| python3 -m json.tool` |
+| Quick Analysis | `curl -s -X POST …/api/analyze -F "file=@…zip" \| python3 -m json.tool` |
+| GitHub URL | either endpoint with `-F "github_url=https://github.com/owner/repo"` |
 | pytest | `PYTHONPATH=. pytest tests/test_api.py -v` |
 
 | HTTP status | When |
@@ -1468,29 +1481,29 @@ Flow: ingest → `AnalysisPipeline.run(local_path)` → `AnalysisStore.save(job_
 | 404 | GitHub repo not found / not accessible |
 | 502 | `git clone` failed |
 
-#### GET /api/impact/{repo_id}
+#### GET /api/repos/{repo_id}/impact
 
-On-demand blast radius for one file. Use `job_id` from analyze as `repo_id`. Reuses stored graph + scores — no re-parse.
+On-demand blast radius for one file. Use `repo_id` (`repositories.id`) from analyze. Reuses stored graph + scores — no re-parse. Loads from `AnalysisStore` or PostgreSQL (`load_pipeline_result`).
 
 ```bash
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
+REPO_ID=$(curl -s -X POST http://localhost:8000/api/repos/analyze \
   -F "file=@backend/tests/fixtures/mini_repo.zip" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
 
-curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" \
+curl -s "http://localhost:8000/api/repos/${REPO_ID}/impact?file=mini_repo/myapp/models.py" \
   | python3 -m json.tool
 ```
 
 | Check | Command |
 |-------|---------|
-| Impact query | `curl -s "…/api/impact/${JOB_ID}?file=path/to/file.py" \| python3 -m json.tool` |
+| Impact query | `curl -s "…/api/repos/${REPO_ID}/impact?file=path/to/file.py" \| python3 -m json.tool` |
 | Impact pytest | `PYTHONPATH=. pytest tests/test_api.py -k impact -v` |
 | Unit tests | `PYTHONPATH=. pytest tests/algorithms/test_impact.py -v` |
 
 | HTTP status | When |
 |-------------|------|
 | 400 | Missing or empty `file` query parameter |
-| 404 | Unknown `repo_id` |
+| 404 | Unknown `repo_id` or no completed analysis |
 | 404 | File not in graph |
 
 Response fields: `target`, `direct_dependents`, `indirect_dependents`, `layers`, `summary`. Detail: [Phase 1, Week 2 — Impact Analysis](#phase-1-week-2--impact-analysis).
@@ -1778,7 +1791,7 @@ Every `FileAnalysis` field is exported (`imports`, `resolved_deps`, `external_de
 | Addition | Where it goes |
 |----------|----------------|
 | Class / function / call graphs | New top-level keys like `class_graph`, *or* `graphs: { "file": ..., "class": ... }` — with `type: "inherits"` / `"calls"` once resolved |
-| Batch impact (all files) | Not planned — impact stays on-demand via `GET /api/impact` |
+| Batch impact (all files) | Not planned — impact stays on-demand via `GET /api/repos/{repo_id}/impact` |
 | Communities / SCCs / shortest paths | `analysis.communities`, etc. |
 | AI explanations | `analysis.explanations` or a sibling `insights` section in v2 |
 
@@ -1810,11 +1823,11 @@ Score field meanings: [What each property means](#1-what-each-property-means).
 
 ## Phase 2, Week 4 — PostgreSQL Schema
 
-**Goal:** Define the persistent data model from [SRS §7](./SRS_ProjectPlan.md#7-database-schema) and ship it via Alembic migrations. **Shipped:** `POST /api/analyze` writes `PipelineResult` to Postgres via `app/db/persist.py`; `GET /api/impact` loads from memory or DB via `app/db/load.py`. **Not yet:** async 202 + status polling.
+**Goal:** Define the persistent data model from [SRS §7](./SRS_ProjectPlan.md#7-database-schema) and ship it via Alembic migrations. **Shipped:** `POST /api/analyze` and `POST /api/repos/analyze` write `PipelineResult` to Postgres via `app/db/persist.py`; `GET /api/repos/{repo_id}/impact` (and `/graph`, `/scores`) load from memory or DB via `app/db/load.py`. **Not yet:** async 202 + status polling.
 
 ### Right now vs after persistence
 
-#### Right now (sync API, in-memory)
+#### Today (sync API, memory + PostgreSQL)
 
 ```
 Upload ZIP or GitHub URL
@@ -1828,22 +1841,19 @@ Upload ZIP or GitHub URL
         ▼
    PipelineResult  (Python object: analyses, graph, cycles, scores)
         │
-        ├──► AnalysisStore.save(job_id, result)   ← in-memory dict
+        ├──► persist_pipeline_result()  → PostgreSQL rows
+        ├──► AnalysisStore.save(repo_id, result)   ← in-memory dict
         │
         ▼
-   Return full JSON (200 OK)
+   Return JSON (200 OK)
         │
         ▼
    cleanup()  (temp extract/clone dir removed)
 ```
 
-Everything important lives **in process memory**:
+Every successful analyze writes to Postgres **and** caches in `AnalysisStore` keyed by `repo_id`. Repo sub-routes (`/graph`, `/scores`, `/impact`) check memory first, then reload the latest completed job from DB. **Restart the server** → `AnalysisStore` is empty but Postgres rows survive.
 
-- The HTTP response returns the full analysis JSON immediately.
-- `AnalysisStore` also keeps the `PipelineResult` keyed by `job_id` so `GET /api/impact/{job_id}?file=...` can run later **without re-parsing**.
-- **Restart the server** → `AnalysisStore` is empty. Postgres tables exist but have **no rows** yet.
-
-#### After persistence (planned)
+#### Async jobs (planned)
 
 ```
 Upload ZIP or GitHub URL
@@ -2086,11 +2096,12 @@ Full reference: [Architecture — Database operations](./Architecture.md#databas
 
 | Shipped | Not yet |
 |---------|---------|
-| ORM models + Alembic migration | Async `202` + `GET /api/status/{job_id}` |
-| `alembic upgrade head` creates schema | `GET /api/graph/{job_id}` reads from DB |
-| `POST /api/analyze` persists rows | Idempotent zip re-upload returns cached job |
-| `GET /api/impact` loads from DB after restart | |
-| `test_db_schema.py` + `test_db_persist.py` | |
+| ORM models + Alembic migration | Async `202` + `GET /api/status/{repo_id}` |
+| `alembic upgrade head` creates schema | Job APIs (`GET /api/jobs/{job_id}`, …) |
+| `POST /api/analyze` / `POST /api/repos/analyze` persist rows | Idempotent zip re-upload returns cached job |
+| `GET /api/repos/{repo_id}/impact` loads from DB after restart | |
+| Repo-centric `/graph`, `/scores`, `/impact` sub-routes | |
+| `test_db_schema.py` + `test_db_persist.py` + `test_db_queries.py` | |
 
 Today: every successful analyze writes to Postgres **and** caches in `AnalysisStore`. Impact works from either; after restart, only DB remains.
 
@@ -2259,7 +2270,7 @@ That is why `pytest --collect-only` reports **11** tests in `test_parser.py` eve
 
 ## Testing overview
 
-**141 tests** across thirteen suites. Run all from `backend/` with `pytest tests/ -v` (`pythonpath = .` in `pytest.ini`).
+**165 tests** across fifteen suites. Run all from `backend/` with `pytest tests/ -v` (`pythonpath = .` in `pytest.ini`).
 
 This section is the **detailed test catalog** — what each file proves and how layers are isolated. For pytest basics (first time using it), see [Introduction to pytest](#introduction-to-pytest). For copy-paste commands when developing, see [README](../README.md#tests) or [Architecture — CLI Reference](./Architecture.md#12-cli-reference). For which tests gate roadmap milestones, see [Roadmap](./Roadmap.md). For requirements-to-test mapping, see [SRS §10–12](./SRS_ProjectPlan.md#10-functional-requirements).
 
@@ -2274,12 +2285,12 @@ This section is the **detailed test catalog** — what each file proves and how 
 | Benchmark | `test_benchmark.py` | 16 | Unit + integration | `StageMetric`, grouped `format_metrics_table`, edge cases |
 | Ingestion (zip) | `test_ingestion.py` | 8 | Unit | Zip path/bytes, zip-slip, cleanup |
 | Ingestion (GitHub) | `test_github_ingestion.py` | 17 | Unit + integration | URL parse, mocked clone, live `pypa/sampleproject` |
-| API | `test_api.py` | 14 | Integration | `POST /api/analyze` — zip, GitHub URL; `GET /api/impact` |
+| API | `test_api.py` | 31 | Integration | `POST /api/analyze`, `POST /api/repos/analyze`, repo list/detail, graph/scores/impact |
 | DB schema | `test_db_schema.py` | 2 | Unit | ORM metadata: 8 SRS tables + key FKs / PKs (no live Postgres) |
 | Serialize | `test_serialize.py` | 18 | Unit | JSON (`metadata`, `repository`, `statistics`, rounded scores, …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | Unit | `CycleDetector` on synthetic `nx.DiGraph` |
 | Scoring | `tests/algorithms/test_scoring.py` | 13 | Unit | `AlgorithmEngine` on synthetic `nx.DiGraph` |
-| Impact | `tests/algorithms/test_impact.py` | 8 | Unit | `ImpactAnalyzer` on synthetic `nx.DiGraph` |
+| Impact | `tests/algorithms/test_impact.py` | 9 | Unit | `ImpactAnalyzer` on synthetic `nx.DiGraph` |
 
 ```
 test_parser.py     →  ASTParser / parse_repository  →  FileAnalysis

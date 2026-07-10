@@ -17,3 +17,16 @@ class RepositoryNotFoundError(IngestionError):
 
 class CloneError(IngestionError):
     """Raised when ``git clone`` fails."""
+
+
+class UnsafeArchiveError(IngestionError, ValueError):
+    """Raised when a zip archive contains a member that escapes the extract dir.
+
+    Subclasses ``ValueError`` so existing callers that catch ``ValueError`` keep
+    working, while also fitting the ``IngestionError`` hierarchy for centralized
+    HTTP error handling.
+    """
+
+
+class EmptyRepositoryError(IngestionError, ValueError):
+    """Raised when an ingested repository contains no analyzable Python files."""

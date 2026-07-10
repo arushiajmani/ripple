@@ -68,12 +68,10 @@ class ImpactAnalyzer:
         start = time.perf_counter()
 
         total_files = digraph.number_of_nodes()
-        direct_dependents = sorted(digraph.predecessors(target_file))
-        direct_set = set(direct_dependents)
-        all_ancestors = nx.ancestors(digraph, target_file)
-        indirect_dependents = sorted(all_ancestors - direct_set)
 
-        # Reversed edges (imported → importer): hop distance = blast-radius depth.
+        # A single reverse BFS (imported → importer) yields the whole blast
+        # radius: hop distance is the blast-radius depth, so depth 1 is the
+        # direct importers and depth >= 2 is the indirect importers.
         rev = digraph.reverse(copy=False)
         distances = nx.single_source_shortest_path_length(rev, target_file)
 
@@ -87,6 +85,14 @@ class ImpactAnalyzer:
             ImpactLayer(depth=depth, files=sorted(by_depth[depth]))
             for depth in sorted(by_depth)
         ]
+
+        direct_dependents = sorted(by_depth.get(1, []))
+        indirect_dependents = sorted(
+            node
+            for depth, nodes in by_depth.items()
+            if depth >= 2
+            for node in nodes
+        )
 
         direct_count = len(direct_dependents)
         indirect_count = len(indirect_dependents)

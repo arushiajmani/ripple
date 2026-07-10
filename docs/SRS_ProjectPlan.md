@@ -118,7 +118,7 @@ Each component (parser, graph engine, API, frontend) has a clear boundary and co
 │  │             │  │              │  │                  │   │
 │  │ clone repo  │  │ ast parser   │  │ /api/analyze     │   │
 │  │ validate    │  │ networkx     │  │ /api/graph/{id}  │   │
-│  │ index files │  │ algorithms   │  │ /api/impact/{id} │   │
+│  │ index files │  │ algorithms   │  │ /api/repos/{id}/impact │   │
 │  └──────┬──────┘  └──────┬───────┘  └──────────────────┘   │
 │         │                │                                   │
 │         └────────────────▼                                   │
@@ -388,7 +388,7 @@ This section traces exactly what happens from the moment a user pastes a URL to 
 12. USER clicks a node (e.g., "auth/session.py")
         │
         ▼
-13. (API shipped) Frontend calls GET /api/impact/{repo_id}?file=auth/session.py
+13. (API shipped) Frontend calls GET /api/repos/{repo_id}/impact?file=auth/session.py
         │
         ▼
 14. (API shipped) Backend runs `ImpactAnalyzer` on stored `PipelineResult`:
@@ -662,15 +662,15 @@ curl -s -X POST http://localhost:8000/api/analyze \
   -F "github_url=https://github.com/pypa/sampleproject" | python3 -m json.tool
 ```
 
-Flow: ingest → `AnalysisPipeline.run(local_path)` → `AnalysisStore.save(job_id, result)` → `cleanup()` (temp dir removed). The `job_id` in the response is the key for impact queries.
+Flow: ingest → `AnalysisPipeline.run(local_path)` → `persist_pipeline_result()` → `AnalysisStore.save(repo_id, result)` → `cleanup()` (temp dir removed). The response returns both `repo_id` (`repositories.id`) and `job_id` (`analysis_jobs.id`). Use `repo_id` for subsequent GET URLs.
 
-##### GET /api/impact/{repo_id}
+##### GET /api/repos/{repo_id}/impact
 
-Uses in-memory `AnalysisStore` keyed by `job_id` from `POST /api/analyze`. Does **not** re-parse source or rebuild the graph. Temp extract/clone dirs are already cleaned; only `PipelineResult` artifacts (graph + scores) remain until server restart (Postgres schema shipped; write path planned).
+Uses `AnalysisStore` keyed by `repo_id`, falling back to PostgreSQL (`load_pipeline_result` for the latest completed job). Does **not** re-parse source or rebuild the graph. Temp extract/clone dirs are already cleaned; only `PipelineResult` artifacts (graph + scores) remain.
 
 ```
 Path params:
-  repo_id: job_id returned by POST /api/analyze
+  repo_id: repositories.id returned by POST /api/analyze or POST /api/repos/analyze
 
 Query params:
   file: repo-relative path, URL-encoded (e.g. mini_repo/myapp/models.py)
@@ -703,7 +703,7 @@ Response 200 OK:
 }
 
 Response 400: missing or empty `file` query parameter
-Response 404: unknown repo_id (analysis not in store)
+Response 404: unknown repo_id (no completed analysis)
 Response 404: file not in graph (path not a node in this repo's import graph)
 ```
 
@@ -723,12 +723,12 @@ Field notes:
 | `summary.files_affected_percentage` | `summary.total / total_files_in_graph * 100`, rounded to 3 decimal places |
 
 ```bash
-# Analyze first; capture job_id
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
+# Analyze first; capture repo_id
+REPO_ID=$(curl -s -X POST http://localhost:8000/api/repos/analyze \
   -F "file=@backend/tests/fixtures/mini_repo.zip" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
 
-curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" \
+curl -s "http://localhost:8000/api/repos/${REPO_ID}/impact?file=mini_repo/myapp/models.py" \
   | python3 -m json.tool
 ```
 
@@ -736,12 +736,14 @@ curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.
 
 ```bash
 cd backend && source .venv/bin/activate
-PYTHONPATH=. pytest tests/test_api.py -v                              # analyze + impact (14)
-PYTHONPATH=. pytest tests/test_api.py -k impact -v                    # impact API only (3)
+PYTHONPATH=. pytest tests/test_api.py -v                              # API integration (31)
+PYTHONPATH=. pytest tests/test_api.py -k impact -v                    # impact API only
 PYTHONPATH=. pytest tests/algorithms/test_impact.py -v                # ImpactAnalyzer unit (8)
 ```
 
-Study guide: [learn.md — Impact Analysis](./learn.md#phase-1-week-2--impact-analysis). Full contract mirror: [Architecture §6 — GET /api/impact/{repo_id}](./Architecture.md#get-apiimpactrepo_id).
+Study guide: [learn.md — Impact Analysis](./learn.md#phase-1-week-2--impact-analysis). Full contract mirror: [Architecture §6 — GET /api/repos/{repo_id}/impact](./Architecture.md#get-apireposrepo_idimpact).
+
+> **Removed:** standalone `GET /api/impact/{repo_id}` was identical to this route and has been deleted.
 
 ---
 
@@ -788,7 +790,7 @@ GET    /api/repos
 
 Interactive docs: `http://localhost:8000/docs` (Swagger UI lists both shipped endpoints).
 
-When PostgreSQL ships, `GET /api/impact/{repo_id}?file=...` will load graph + scores from the database instead of the in-memory store; the response shape stays the same.
+When PostgreSQL is cold (server restart), `GET /api/repos/{repo_id}/impact?file=...` loads graph + scores from the database via `load_pipeline_result` for the latest completed job; the response shape stays the same.
 
 **Benchmark CLI (no HTTP):**
 
@@ -890,7 +892,7 @@ This makes the impact analysis immediately visual — you see the "ripple" propa
 
 ### Verification (how to test requirements)
 
-Run all backend tests from `backend/`: `pytest tests/ -v` (**141 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests) · Full CLI reference: [Architecture §12](./Architecture.md#12-cli-reference).
+Run all backend tests from `backend/`: `pytest tests/ -v` (**165 tests**). Use `-v` for verbose output (one line per test). Per-suite commands, pytest basics, and the full test catalog: [learn.md — Introduction to pytest](./learn.md#introduction-to-pytest) and [Testing overview](./learn.md#testing-overview). Quick commands: [README](../README.md#tests) · Full CLI reference: [Architecture §12](./Architecture.md#12-cli-reference).
 
 
 | Requirement                            | Status          | Verified by                                                                     |
@@ -901,8 +903,8 @@ Run all backend tests from `backend/`: `pytest tests/ -v` (**141 tests**). Use `
 | FR-04 PageRank                         | Partial         | `test_scoring.py` (13) + pipeline; graph/status API pending — [learn.md](./learn.md#phase-1-week-2--criticality-scoring) |
 | FR-05 Betweenness                      | Partial         | same as FR-04                                                                   |
 | FR-06 Circular dependencies            | Partial         | `test_cycles.py` (8) + `test_pipeline.py`; graph/status API pending — [learn.md](./learn.md#phase-1-week-2--cycle-detection) |
-| FR-07 REST API                         | Partial         | Sync `POST /api/analyze` (zip or `github_url`) + `GET /api/impact/{repo_id}` — `tests/test_api.py` (14); async/DB endpoints pending |
-| FR-09 Impact analysis (on-demand)      | Implemented     | `ImpactAnalyzer` + `GET /api/impact` — `tests/algorithms/test_impact.py` (8), `tests/test_api.py` (3 impact cases) |
+| FR-07 REST API                         | Partial         | Sync analyze + repo-centric routes (`POST /api/repos/analyze`, `GET /api/repos`, sub-routes) — `tests/test_api.py` (31); async/job APIs pending |
+| FR-09 Impact analysis (on-demand)      | Implemented     | `ImpactAnalyzer` + `GET /api/repos/{repo_id}/impact` — `tests/algorithms/test_impact.py` (8), `tests/test_api.py` (impact cases) |
 | FR-13 Pipeline metrics                 | Partial         | `PipelineResult.metrics`; status API pending                                    |
 | FR-14 Benchmark CLI                    | Implemented     | `python -m app.benchmark --repo` (`tests/test_benchmark.py`)                    |
 
@@ -954,7 +956,7 @@ Run all backend tests from `backend/`: `pytest tests/ -v` (**141 tests**). Use `
 - [x] Milestone: CLI produces `result.json` with nodes, edges, scores, and cycles (`--json`)
 - [x] Milestone: `curl -X POST /api/analyze -F file=@…zip` returns full analysis JSON (see [README](../README.md#api-rest-endpoints))
 - [x] Milestone: `curl -X POST /api/analyze -F github_url=https://github.com/pypa/sampleproject` returns full analysis JSON
-- [x] Milestone: `GET /api/impact/{job_id}?file=…` returns layered blast radius after analyze (see [§8 — GET /api/impact/{repo_id}](#get-apiimpactrepo_id))
+- [x] Milestone: `GET /api/repos/{repo_id}/impact?file=…` returns layered blast radius after analyze (see [§8 — GET /api/repos/{repo_id}/impact](#get-apireposrepo_idimpact))
 
 *At the end of Phase 1, the hard work is done. Everything after this is presentation.*
 
@@ -969,7 +971,7 @@ Run all backend tests from `backend/`: `pytest tests/ -v` (**141 tests**). Use `
 - [x] Set up FastAPI project, Docker Compose (FastAPI + PostgreSQL) — health endpoint only
 - [x] Implement `POST /api/analyze` (partial) — sync zip or GitHub URL, returns full analysis JSON (`tests/test_api.py`)
 - [x] Implement `ImpactAnalyzer` — on-demand blast radius (`graph/algorithms/impact.py`, `tests/algorithms/test_impact.py`, 8 cases)
-- [x] Implement `GET /api/impact/{repo_id}?file=...` — returns impact analysis from stored `PipelineResult` (`tests/test_api.py`, 3 impact cases)
+- [x] Implement `GET /api/repos/{repo_id}/impact?file=...` — returns impact analysis from stored `PipelineResult` (`tests/test_api.py`)
 - [x] Implement PostgreSQL schema (migrations via Alembic) — `app/db/models.py`, `alembic/versions/63207e50c596_initial_schema.py`, `tests/test_db_schema.py`
 - [ ] Implement `POST /api/analyze` (full) — async 202, job record in DB, background analysis
 - [ ] Implement `GET /api/status/{repo_id}` — returns job status and `metrics[]` when complete
@@ -977,10 +979,10 @@ Run all backend tests from `backend/`: `pytest tests/ -v` (**141 tests**). Use `
 
 **Week 5: Graph Endpoints**
 
-- [ ] Implement `GET /api/graph/{repo_id}` — returns full graph JSON
-- [ ] Implement `GET /api/repos` — returns history
+- [x] Implement `GET /api/repos/{repo_id}/graph` — returns graph JSON (latest completed job)
+- [x] Implement `GET /api/repos` — returns repository list
 - [ ] Test all endpoints via FastAPI's auto-generated `/docs` UI
-- [ ] Milestone: Full API functional, tested manually via Swagger UI *(impact endpoint shipped — see [§8 — GET /api/impact/{repo_id}](#get-apiimpactrepo_id))*
+- [ ] Milestone: Full API functional, tested manually via Swagger UI *(repo-centric Phases 1 & 2 shipped — see [§8 — GET /api/repos/{repo_id}/impact](#get-apireposrepo_idimpact))*
 
 ---
 

@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import io
-import zipfile
-from pathlib import Path
-
 import uuid
 
 import pytest
@@ -17,16 +13,7 @@ from app.db.models import AnalysisJob, File
 from app.db.persist import persist_pipeline_result
 from app.pipeline import AnalysisPipeline
 
-FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_repo"
-
-
-def _mini_repo_zip_bytes() -> bytes:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        for py_file in FIXTURE_ROOT.rglob("*.py"):
-            rel = py_file.relative_to(FIXTURE_ROOT.parent).as_posix()
-            archive.write(py_file, rel)
-    return buffer.getvalue()
+from tests.support import FIXTURE_ROOT, mini_repo_zip_bytes
 
 
 @pytest.mark.integration
@@ -42,10 +29,11 @@ def test_persist_and_load_pipeline_result(db_session) -> None:
         file_hash="test-hash-mini-repo",
     )
 
-    persist_pipeline_result(db_session, job_id, result, context)
+    persisted = persist_pipeline_result(db_session, job_id, result, context)
     db_session.flush()
 
-    loaded = load_pipeline_result(db_session, job_id)
+    assert persisted.job_id == uuid.UUID(job_id)
+    loaded = load_pipeline_result(db_session, str(persisted.job_id))
     assert loaded is not None
     assert set(loaded.graph.nodes) == set(result.graph.nodes)
     assert loaded.graph.edges == result.graph.edges
@@ -58,7 +46,7 @@ def test_persist_and_load_pipeline_result(db_session) -> None:
 def test_analyze_api_persists_rows(client, db_session) -> None:
     response = client.post(
         "/api/analyze",
-        files={"file": ("mini_repo.zip", _mini_repo_zip_bytes(), "application/zip")},
+        files={"file": ("mini_repo.zip", mini_repo_zip_bytes(), "application/zip")},
     )
     assert response.status_code == 200
     job_id = uuid.UUID(response.json()["job_id"])
@@ -78,15 +66,15 @@ def test_impact_loads_from_database_after_store_cleared(client) -> None:
 
     analyze = client.post(
         "/api/analyze",
-        files={"file": ("mini_repo.zip", _mini_repo_zip_bytes(), "application/zip")},
+        files={"file": ("mini_repo.zip", mini_repo_zip_bytes(), "application/zip")},
     )
     assert analyze.status_code == 200
-    job_id = analyze.json()["job_id"]
+    repo_id = analyze.json()["repo_id"]
 
     app.state.analysis_store = type(app.state.analysis_store)()
 
     response = client.get(
-        f"/api/impact/{job_id}",
+        f"/api/repos/{repo_id}/impact",
         params={"file": "mini_repo/myapp/models.py"},
     )
     assert response.status_code == 200

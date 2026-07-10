@@ -78,7 +78,7 @@ Self-loops count as one-node cycles.
 criticality = 0.6 * normalize(pagerank) + 0.4 * normalize(betweenness)
 ```
 
-Min-max normalization is per-repo. One **untimed** PageRank warm-up runs before the timed stage (benchmark steady-state). See [performance metrics](../reference/performance-metrics.md).
+Min-max normalization is per-repo. Production analysis computes PageRank once; the benchmark CLI opts into an extra **untimed** PageRank warm-up before the timed stage (benchmark steady-state). See [performance metrics](../reference/performance-metrics.md).
 
 | Property | Meaning |
 |----------|---------|
@@ -106,7 +106,7 @@ impact = ImpactAnalyzer().analyze(digraph, "myapp/models.py", scores=scores)
 - **Layers** — hop distance on reversed graph
 - **Target score** — looked up from `ScoringResult`, not recomputed
 
-Wired via `AnalysisStore` + `GET /api/impact/{repo_id}?file=...`. API detail: [api.md](api.md).
+Wired via `AnalysisStore` + `GET /api/repos/{repo_id}/impact?file=...`. API detail: [api.md](api.md).
 
 ## Try it yourself
 

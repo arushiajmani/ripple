@@ -21,8 +21,11 @@
 | **indirect_dependents** | Hop 2+ importers, excluding direct. |
 | **layers** | Dependents grouped by hop distance from target. |
 | **PipelineResult** | Full analysis artifact: `analyses`, `graph`, `cycles`, `scores`, `metrics`. |
-| **AnalysisStore** | In-memory `job_id` → `PipelineResult` cache for impact queries. |
-| **job_id** | UUID for one analyze run; use as `repo_id` in impact API. |
+| **AnalysisStore** | In-memory `repo_id` → `PipelineResult` cache for graph/scores/impact queries. |
+| **Repository Analysis** | `POST /api/repos/analyze` — slim analyze response; fetch graph/scores/impact via repo sub-routes. |
+| **Quick Analysis** | `POST /api/analyze` — full analysis JSON in one response (graph, scores, files inline). |
+| **repo_id** | UUID for a repository (`repositories.id`); use in all GET URLs (`/api/repos/{repo_id}/…`). |
+| **job_id** | UUID for one analyze run (`analysis_jobs.id`); returned on POST; job APIs (Phase 3) for history. |
 | **RepositoryHandle** | Ingestion output: `local_path`, `job_id`, `python_files`. |
 | **StageMetric** | One timed pipeline stage: `stage_name`, `duration_ms`, optional `files_processed`. |
 | **V1 / V2 / V3** | File import graph → class/call graphs → AI insights. See [product](../product/README.md#version-ladder). |

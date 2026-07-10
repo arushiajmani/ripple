@@ -39,7 +39,7 @@ Output groups stages: **Repository → Parsing → Graph → Algorithms**. Perce
 
 ## Steady-state PageRank
 
-One **untimed** PageRank runs before the timed `pagerank_computation` stage to exclude one-time NetworkX/SciPy backend initialization. The CLI prints a performance note at the end of the report.
+The benchmark CLI runs one **untimed** PageRank before the timed `pagerank_computation` stage to exclude one-time NetworkX/SciPy backend initialization. This warm-up is benchmark-only (`AlgorithmEngine(warmup_pagerank=True)`); production analysis computes PageRank a single time. The CLI prints a performance note at the end of the report.
 
 Tests: `test_pagerank_warmup_excludes_cold_start_from_metrics` in `test_scoring.py`.
 

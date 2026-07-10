@@ -69,7 +69,7 @@ Third-party packages (`import requests`) stay in `external_deps`, not graph node
 cd backend && source .venv/bin/activate
 pytest tests/test_ingestion.py -v          # zip (8)
 pytest tests/test_github_ingestion.py -v   # GitHub (17)
-pytest tests/test_api.py -v                # HTTP analyze + impact (14)
+pytest tests/test_api.py -v                # HTTP API (31)
 
 # Skip live GitHub clone (CI / offline):
 pytest tests/test_github_ingestion.py -v -m "not integration"

@@ -56,11 +56,14 @@ Docker Compose (backend, db, frontend), health endpoint, Vite scaffold.
 
 | Item | Status |
 |------|--------|
-| Sync `POST /api/analyze` | ✓ |
-| `GET /api/impact` | ✓ |
+| **Repository Analysis** — `POST /api/repos/analyze` (slim; preferred for UIs) | ✓ |
+| **Quick Analysis** — `POST /api/analyze` (full JSON in one response) | ✓ |
+| `GET /api/repos/{repo_id}/impact` (on-demand blast radius) | ✓ |
 | PostgreSQL schema + persist | ✓ |
-| Async 202 + `GET /api/status` | Planned |
-| `GET /api/graph`, `GET /api/repos` | Planned |
+| **Repo-centric API Phase 1** (slim POST, list, detail) | ✓ |
+| **Repo-centric API Phase 2** (`/graph`, `/scores`, `/impact` under repos) | ✓ |
+| **Job APIs** (`GET /jobs/{job_id}`, history) | Planned — [api-resources.md](../architecture/api-resources.md) |
+| Async 202 + `GET /api/status` | Planned (after repo-centric) |
 
 ### Phase 3 — Frontend (not started)
 
@@ -95,7 +98,8 @@ Full FR/NFR tables: historical [SRS_ProjectPlan.md](../SRS_ProjectPlan.md).
 
 - Why modular monolith? → [architecture/README.md](../architecture/README.md)
 - Why PostgreSQL not Neo4j? → compute in NetworkX, persist relationally
-- Async jobs? → 202 + poll; see [backend/api.md](../backend/api.md#planned-endpoints)
+- Async jobs? → 202 + poll; see [repo-centric-api-plan.md](repo-centric-api-plan.md)
+- Repo vs job IDs? → [repo-centric-api-plan.md](repo-centric-api-plan.md#id-model)
 
 **Algorithms**
 

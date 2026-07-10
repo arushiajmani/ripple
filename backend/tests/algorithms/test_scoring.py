@@ -22,7 +22,7 @@ from typing import Callable
 
 import networkx as nx
 
-from app.graph import AlgorithmEngine, GraphAdapter, GraphResult, NodeScore
+from app.graph import AlgorithmEngine, GraphResult, NodeScore
 from app.graph.algorithms.scoring import (
     BETWEENNESS_WEIGHT,
     PAGERANK_WEIGHT,
@@ -30,11 +30,7 @@ from app.graph.algorithms.scoring import (
 )
 from app.parser.models import FileAnalysis
 
-from tests.algorithms.helpers import make_file
-
-
-def _to_digraph(graph: GraphResult) -> nx.DiGraph:
-    return GraphAdapter().to_digraph(graph)
+from tests.support import make_file, to_digraph
 
 
 # --- normalize_scores ---
@@ -127,7 +123,7 @@ def test_bridge_node_has_high_betweenness(
 
 def test_criticality_uses_weighted_normalized_metrics() -> None:
     """criticality == 0.6 * norm(pr) + 0.4 * norm(bt) for each node."""
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["hub.py", "a.py", "b.py"],
             edges=[("a.py", "hub.py"), ("b.py", "hub.py")],
@@ -188,7 +184,7 @@ def test_top_returns_first_n(
 
 def test_run_matches_score() -> None:
     """run() and score() are the same method (alias)."""
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["a.py", "b.py"],
             edges=[("a.py", "b.py")],
@@ -221,7 +217,7 @@ def test_node_score_fields_present(
 
 def test_pagerank_warmup_excludes_cold_start_from_metrics() -> None:
     """Untimed warm-up runs before the measured PageRank stage."""
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["a.py", "b.py"],
             edges=[("a.py", "b.py")],

@@ -1,17 +1,29 @@
 # API Schema
 
-> Shipped endpoints only. Planned shapes noted inline. HTTP usage: [backend/api.md](../backend/api.md).
+> **Current** shapes reflect shipped endpoints. **Target** shapes are the repo-centric contract — see [product/repo-centric-api-plan.md](../product/repo-centric-api-plan.md). HTTP usage: [backend/api.md](../backend/api.md).
 
-## POST /api/analyze
+---
+
+## Current (shipped)
+
+Ripple has **two analyze POST endpoints** with the same request body but different responses. See [backend/api.md — Two ways to analyze](../backend/api.md#two-ways-to-analyze).
+
+| Name | Route | Response |
+|------|-------|----------|
+| **Quick Analysis** | `POST /api/analyze` | Full JSON (graph, scores, files inline) |
+| **Repository Analysis** | `POST /api/repos/analyze` | Slim (`repo_id`, `job_id`, `status`, `repository`) |
+
+### POST /api/analyze — Quick Analysis
 
 **Request (zip):** `multipart/form-data` — field `file`
 
 **Request (GitHub):** `multipart/form-data` — field `github_url`
 
-**Response 200:**
+**Response 200 (fat JSON):**
 
 ```json
 {
+  "repo_id": "uuid",
   "job_id": "uuid",
   "status": "complete",
   "metadata": { "generated_at": "..." },
@@ -24,6 +36,8 @@
 }
 ```
 
+**IDs:** `repo_id` = `repositories.id` (use in GET URLs). `job_id` = `analysis_jobs.id` (one per run). Both are always returned when persistence is enabled.
+
 Score floats rounded to **four decimal places** in JSON.
 
 | Status | When |
@@ -32,13 +46,147 @@ Score floats rounded to **four decimal places** in JSON.
 | 404 | GitHub repo not found |
 | 502 | `git clone` failed |
 
+### GET /health
+
+```json
+{ "status": "ok" }
+```
+
+---
+
+## Target (repo-centric)
+
+Full spec: [product/repo-centric-api-plan.md](../product/repo-centric-api-plan.md).
+
+### Phase 1 — shipped
+
+#### POST /api/repos/analyze — Repository Analysis
+
+Same request as Quick Analysis (`POST /api/analyze`).
+
+**Response 200 (slim):**
+
+```json
+{
+  "repo_id": "uuid",
+  "job_id": "uuid",
+  "status": "complete",
+  "repository": {
+    "name": "mini_repo",
+    "source": "zip"
+  }
+}
+```
+
 **Planned 202:**
 
 ```json
-{ "repo_id": "uuid", "status": "processing" }
+{ "repo_id": "uuid", "job_id": "uuid", "status": "processing" }
 ```
 
-## GET /api/impact/{repo_id}
+### GET /api/repos
+
+```json
+[
+  {
+    "repo_id": "uuid",
+    "name": "pallets/click",
+    "source": "github",
+    "status": "complete",
+    "summary": {
+      "file_count": 63,
+      "node_count": 63,
+      "edge_count": 148,
+      "cycle_count": 4
+    },
+    "created_at": "2026-07-09T12:00:00Z",
+    "analyzed_at": "2026-07-09T12:01:30Z"
+  }
+]
+```
+
+### GET /api/repos/{repo_id}
+
+```json
+{
+  "repo_id": "uuid",
+  "repository": {
+    "name": "pallets/click",
+    "source": "github",
+    "owner": "pallets",
+    "repo_name": "click"
+  },
+  "summary": {
+    "file_count": 63,
+    "node_count": 63,
+    "edge_count": 148,
+    "cycle_count": 4
+  },
+  "statistics": {
+    "class_count": 120,
+    "function_count": 450,
+    "external_dependency_count": 12,
+    "graph_density": 0.038
+  },
+  "job_id": "uuid"
+}
+```
+
+### Phase 2 — shipped
+
+All three sub-routes resolve the repository's **latest completed job**.
+
+#### GET /api/repos/{repo_id}/graph
+
+```json
+{
+  "repo_id": "uuid",
+  "nodes": ["path/to/a.py", "path/to/b.py"],
+  "edges": [
+    { "source": "path/to/a.py", "target": "path/to/b.py", "type": "imports" }
+  ],
+  "cycles": {
+    "has_cycles": true,
+    "cycle_count": 1,
+    "cycles": [
+      {
+        "nodes": ["a.py", "b.py"],
+        "length": 2,
+        "edges": [
+          { "source": "a.py", "target": "b.py", "type": "imports" },
+          { "source": "b.py", "target": "a.py", "type": "imports" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`nodes`/`edges`/`cycles` reuse the same serializers as the fat `POST /api/analyze` payload (`graph.*` and `analysis.cycles`).
+
+#### GET /api/repos/{repo_id}/scores
+
+```json
+{
+  "repo_id": "uuid",
+  "scores": [
+    {
+      "file_path": "myapp/models.py",
+      "pagerank": 0.3124,
+      "betweenness": 0.0,
+      "criticality": 0.6,
+      "in_degree": 3,
+      "out_degree": 1
+    }
+  ]
+}
+```
+
+DB column `composite_score` maps to JSON field `criticality`.
+
+#### GET /api/repos/{repo_id}/impact
+
+**Path:** `repo_id` — `repositories.id` only (`analysis_jobs.id` is rejected).
 
 **Query:** `file` — repo-relative path (URL-encoded)
 
@@ -75,9 +223,13 @@ Score floats rounded to **four decimal places** in JSON.
 | Status | When |
 |--------|------|
 | 400 | Missing `file` |
-| 404 | Unknown `repo_id` or file not in graph |
+| 404 | Repository not found, no completed analysis, or file not in graph |
 
-## GET /api/status/{repo_id} (planned)
+---
+
+## Deferred (not in repo-centric task)
+
+### GET /api/status/{repo_id}
 
 ```json
 {
@@ -90,18 +242,8 @@ Score floats rounded to **four decimal places** in JSON.
 }
 ```
 
-## GET /api/graph/{repo_id} (planned)
+### Job history (explicitly out of scope)
 
-Nodes with `composite_score`, `pagerank`, `betweenness`, degrees; edges; cycles; statistics.
-
-## GET /api/repos (planned)
-
-```json
-[{ "repo_id": "uuid", "name": "myproject", "status": "complete", "node_count": 47, "created_at": "..." }]
-```
-
-## GET /health
-
-```json
-{ "status": "ok" }
-```
+- `GET /jobs`
+- `GET /jobs/{job_id}`
+- `GET /api/repos/{repo_id}/jobs`

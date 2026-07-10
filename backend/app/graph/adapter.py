@@ -24,8 +24,3 @@ class GraphAdapter:
         digraph.add_nodes_from(graph.nodes)
         digraph.add_edges_from(graph.edges)
         return digraph
-
-
-def graph_result_to_digraph(graph: GraphResult) -> nx.DiGraph:
-    """Convenience wrapper around GraphAdapter.to_digraph."""
-    return GraphAdapter().to_digraph(graph)

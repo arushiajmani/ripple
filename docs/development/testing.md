@@ -8,7 +8,7 @@
 cd backend
 source .venv/bin/activate
 pip install -r requirements.txt   # one-time
-pytest tests/ -v                  # 141 tests
+pytest tests/ -v                  # 165 tests
 ```
 
 ## pytest basics
@@ -48,12 +48,13 @@ Ripple tests use `@pytest.fixture` (e.g. `parser`, `build_digraph`) and `@pytest
 | Serialize | `test_serialize.py` | 18 | JSON export shape |
 | Ingestion (zip) | `test_ingestion.py` | 8 | Zip extract, zip-slip |
 | Ingestion (GitHub) | `test_github_ingestion.py` | 17 | URL parse, clone |
-| API | `test_api.py` | 14 | HTTP analyze + impact |
+| API | `test_api.py` | 31 | HTTP analyze, repos, graph/scores/impact |
 | DB schema | `test_db_schema.py` | 2 | ORM metadata (no live DB) |
-| DB persist | `test_db_persist.py` | — | Write path |
+| DB persist | `test_db_persist.py` | 3 | Write + load path |
+| DB queries | `test_db_queries.py` | 4 | Repository/job query helpers |
 | Cycles | `algorithms/test_cycles.py` | 8 | `CycleDetector` |
 | Scoring | `algorithms/test_scoring.py` | 13 | `AlgorithmEngine` |
-| Impact | `algorithms/test_impact.py` | 8 | `ImpactAnalyzer` |
+| Impact | `algorithms/test_impact.py` | 9 | `ImpactAnalyzer` |
 
 ```text
 test_parser.py     →  FileAnalysis

@@ -21,7 +21,7 @@ from app.metrics import (
 )
 from app.pipeline import AnalysisPipeline
 
-FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_repo"
+from tests.support import FIXTURE_ROOT
 
 
 @pytest.fixture

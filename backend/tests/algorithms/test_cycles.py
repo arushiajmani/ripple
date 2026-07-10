@@ -16,14 +16,10 @@ from typing import Callable
 
 import networkx as nx
 
-from app.graph import CycleDetector, GraphAdapter, GraphResult
+from app.graph import CycleDetector, GraphResult
 from app.parser.models import FileAnalysis
 
-from tests.algorithms.helpers import make_file
-
-
-def _to_digraph(graph: GraphResult) -> nx.DiGraph:
-    return GraphAdapter().to_digraph(graph)
+from tests.support import make_file, to_digraph
 
 
 # --- Empty / acyclic graphs ---
@@ -126,7 +122,7 @@ def test_two_disjoint_cycles(
 
 def test_cycle_normalized_to_lexicographic_start() -> None:
     """Regardless of node list order, cycle path starts at a.py."""
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["myapp/b.py", "myapp/c.py", "myapp/a.py"],
             edges=[
@@ -144,7 +140,7 @@ def test_cycle_normalized_to_lexicographic_start() -> None:
 
 def test_detect_deduplicates_rotations() -> None:
     """A→B→A is one cycle, not two (starting at A vs starting at B)."""
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["myapp/a.py", "myapp/b.py"],
             edges=[("myapp/a.py", "myapp/b.py"), ("myapp/b.py", "myapp/a.py")],
@@ -159,7 +155,7 @@ def test_detect_deduplicates_rotations() -> None:
 
 def test_run_matches_detect() -> None:
     """run() and detect() are the same method (alias)."""
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["myapp/a.py", "myapp/b.py"],
             edges=[("myapp/a.py", "myapp/b.py"), ("myapp/b.py", "myapp/a.py")],

@@ -113,7 +113,7 @@ ripple/
 │   │   │   ├── __init__.py
 │   │   │   ├── pipeline.py     # AnalysisPipeline (parse → graph → adapter → algorithms)
 │   │   │   ├── serialize.py  # JSON export (metadata/summary/statistics/graph/…)
-│   │   │   ├── store.py        # AnalysisStore (in-memory PipelineResult by job_id)
+│   │   │   ├── store.py        # AnalysisStore (in-memory PipelineResult by repo_id)
 │   │   │   └── __main__.py   # python -m app.pipeline <repo> [--json PATH]
 │   │   ├── benchmark/
 │   │   │   └── __main__.py     # python -m app.benchmark --repo <path>
@@ -121,7 +121,10 @@ ripple/
 │   │   │
 │   │   ├── api/                # Component 5: HTTP layer
 │   │   │   ├── __init__.py
-│   │   │   ├── routes.py       # POST /api/analyze, GET /api/impact/{repo_id}
+│   │   │   ├── routes.py       # POST /api/analyze (legacy fat JSON)
+│   │   │   ├── repos.py        # POST /api/repos/analyze, GET /api/repos[/{id}/graph|scores|impact]
+│   │   │   ├── analyze_request.py  # shared analyze request runner (both endpoints)
+│   │   │   ├── errors.py       # centralized domain-exception → HTTP handlers
 │   │   │   ├── analysis.py     # ingest → pipeline orchestration
 │   │   │   ├── impact.py       # on-demand impact from stored artifacts
 │   │   │   └── deps.py         # FastAPI dependencies
@@ -137,7 +140,7 @@ ripple/
 │       ├── test_pipeline.py     # AnalysisPipeline (9)
 │       ├── test_ingestion.py    # zip extract (8)
 │       ├── test_github_ingestion.py  # GitHub clone (17)
-│       ├── test_api.py          # POST /api/analyze + GET /api/impact (14)
+│       ├── test_api.py          # API integration (31)
 │       ├── test_db_schema.py    # ORM metadata vs SCHEMA_TABLES (2)
 │       ├── algorithms/
 │       │   ├── test_cycles.py   # CycleDetector (8)
@@ -194,14 +197,14 @@ Tests mirror component boundaries so each layer can be verified without pulling 
 | Benchmark | `tests/test_benchmark.py` | 16 | Stage metrics, grouped CLI table, `metrics_iterator`, edge cases |
 | Ingestion (zip) | `tests/test_ingestion.py` | 8 | Zip extract, zip-slip, cleanup, pipeline |
 | Ingestion (GitHub) | `tests/test_github_ingestion.py` | 17 | URL validation, mocked clone, live integration |
-| API | `tests/test_api.py` | 14 | `POST /api/analyze` — zip, GitHub URL, errors, cleanup; `GET /api/impact` |
+| API | `tests/test_api.py` | 31 | `POST /api/analyze`, `POST /api/repos/analyze`, repo list/detail, graph/scores/impact |
 | DB schema | `tests/test_db_schema.py` | 2 | ORM metadata registers all 8 SRS tables + key FKs / PKs |
 | Serialize | `tests/test_serialize.py` | 18 | JSON (metadata, repository, statistics, graph, …) |
 | Cycles | `tests/algorithms/test_cycles.py` | 8 | `CycleDetector` — synthetic `nx.DiGraph` only |
 | Scoring | `tests/algorithms/test_scoring.py` | 13 | `AlgorithmEngine` — PageRank, betweenness, criticality, warm-up |
-| Impact | `tests/algorithms/test_impact.py` | 8 | `ImpactAnalyzer` — layers, cycles, score lookup, metrics |
+| Impact | `tests/algorithms/test_impact.py` | 9 | `ImpactAnalyzer` — layers, cycles, score lookup, metrics |
 
-**141 tests total.** Run from `backend/`: `pytest tests/ -v` (`pythonpath = .` in `pytest.ini`).
+**165 tests total.** Run from `backend/`: `pytest tests/ -v` (`pythonpath = .` in `pytest.ini`).
 
 - **CLI commands (all tools + tests):** [§12 CLI Reference](#12-cli-reference)
 - **Quick commands:** [README — Tests](../README.md#tests)
@@ -470,8 +473,8 @@ ImpactAnalyzer            ImpactAnalysisResult (per-file, not a batch stage)
 5. **Analysis always runs from the project root** — `parse_repository(root)` indexes paths relative to `root`. Import resolution maps package names (`app.parser.models`) to those paths (exact + suffix). Pointing at a package subfolder (e.g. `app/parser/`) yields bare names like `models.py`, so in-repo imports are misclassified as `external_deps`. Production (zip/clone) uses the uploaded project root; the CLI must do the same. Detail: [learn.md — Analysis root convention](./learn.md#analysis-root-convention).
 6. **`GraphAdapter` is the single NetworkX conversion point** — Ripple owns `GraphResult`; NetworkX is an implementation detail. The adapter converts once per pipeline run; all algorithms share the same `DiGraph`. Conversion only — no algorithm logic in the adapter.
 7. **`CycleDetector` is a separate algorithm unit** — takes `nx.DiGraph`, uses NetworkX `simple_cycles`, normalizes rotations, returns `CircularDependencyResult`. Wired into `AnalysisPipeline` as `PipelineResult.cycles`; unit-tested in isolation (`tests/algorithms/test_cycles.py`, 8 cases). Detail: [learn.md — Cycle Detection](./learn.md#phase-1-week-2--cycle-detection).
-8. **`AlgorithmEngine` scores criticality** — takes the shared `nx.DiGraph`; PageRank = how depended-on (importance flows importer→imported); betweenness = bridge/bottleneck; criticality = `0.6 * norm(PR) + 0.4 * norm(BT)` relative change-risk; in/out degree = direct importers / imports. One untimed PageRank warm-up runs before the measured stage to exclude one-time SciPy/NetworkX backend initialization from benchmark timings. Wired as `PipelineResult.scores`; CLI prints top 10. Tests: `tests/algorithms/test_scoring.py` (13). Glossary: [learn.md — What each property means](./learn.md#1-what-each-property-means).
-9. **`ImpactAnalyzer` answers "what breaks if I change file F?"** — on-demand query, not a batch pipeline stage. Takes the shared `nx.DiGraph` plus optional `ScoringResult`; walks **predecessors** (reverse reachability: importer → imported, so dependents = who imports F). Uses `predecessors`, `ancestors`, and `single_source_shortest_path_length` on the reversed graph for hop-distance **layers** (each file in exactly one layer). Reuses existing `NodeScore` for the target — does not recompute criticality. Wired via `AnalysisStore` + `GET /api/impact/{repo_id}?file=...`. Temp dirs still cleaned after analyze; only in-memory `PipelineResult` is retained until process restart or the Postgres write path (schema shipped). Tests: `tests/algorithms/test_impact.py` (8). Detail: [learn.md — Impact Analysis](./learn.md#phase-1-week-2--impact-analysis).
+8. **`AlgorithmEngine` scores criticality** — takes the shared `nx.DiGraph`; PageRank = how depended-on (importance flows importer→imported); betweenness = bridge/bottleneck; criticality = `0.6 * norm(PR) + 0.4 * norm(BT)` relative change-risk; in/out degree = direct importers / imports. Production analysis computes PageRank once; the benchmark CLI opts into an extra untimed PageRank warm-up (`AlgorithmEngine(warmup_pagerank=True)`) to exclude one-time SciPy/NetworkX backend initialization from its steady-state timings. Wired as `PipelineResult.scores`; CLI prints top 10. Tests: `tests/algorithms/test_scoring.py` (13). Glossary: [learn.md — What each property means](./learn.md#1-what-each-property-means).
+9. **`ImpactAnalyzer` answers "what breaks if I change file F?"** — on-demand query, not a batch pipeline stage. Takes the shared `nx.DiGraph` plus optional `ScoringResult`; walks **predecessors** (reverse reachability: importer → imported, so dependents = who imports F). Uses `predecessors`, `ancestors`, and `single_source_shortest_path_length` on the reversed graph for hop-distance **layers** (each file in exactly one layer). Reuses existing `NodeScore` for the target — does not recompute criticality. Wired via `AnalysisStore` + `GET /api/repos/{repo_id}/impact?file=...`. Temp dirs cleaned after analyze; `PipelineResult` cached by `repo_id` in memory and persisted to PostgreSQL. Tests: `tests/algorithms/test_impact.py` (8). Detail: [learn.md — Impact Analysis](./learn.md#phase-1-week-2--impact-analysis).
 
 ### Future scope
 
@@ -528,7 +531,7 @@ Top critical files: use `ScoringResult.top(n)` in Python or `analysis.scores.sli
 
 ORM: `backend/app/db/models.py`. Migrations: `backend/alembic/` (initial revision `63207e50c596_initial_schema`). Config: `app/config.py` (`DATABASE_URL`) + `app/database.py` (`Base`, `get_db`).
 
-**Status:** Tables and indexes are defined and migratable. Pipeline results are **not** written to Postgres yet — `AnalysisStore` remains in-memory until the async analyze path lands.
+**Status:** Tables and indexes are defined and migratable. Pipeline results are **written to Postgres** on every successful analyze (`app/db/persist.py`); repo sub-routes reload via `app/db/load.py` when the in-memory store is cold.
 
 #### Memory today → rows tomorrow
 
@@ -715,9 +718,9 @@ cd backend && source .venv/bin/activate
 PYTHONPATH=. pytest tests/test_api.py -v
 ```
 
-**Future (Phase 2):** Return `202 Accepted` with `repo_id` + `status: "processing"`, persist to PostgreSQL, poll `GET /api/status/{repo_id}`. Impact queries will use the same `repo_id` and response shape as today.
+**Future (Phase 4):** Return `202 Accepted` with `repo_id` + `status: "processing"`, poll `GET /api/jobs/{job_id}`. Impact queries use `GET /api/repos/{repo_id}/impact` (latest job) or `GET /api/jobs/{job_id}/impact` (specific run).
 
-See also: [GET /api/impact/{repo_id}](#get-apiimpactrepo_id) (shipped).
+See also: [GET /api/repos/{repo_id}/impact](#get-apireposrepo_idimpact) (shipped).
 
 ```
 Response 202 Accepted (planned):
@@ -800,15 +803,15 @@ Response 200:
 - Response 404: repo not found
 - Response 409: analysis not yet complete
 
-### GET /api/impact/{repo_id}
+### GET /api/repos/{repo_id}/impact
 
-On-demand blast-radius for one file in a **previously analyzed** repository. Uses in-memory `AnalysisStore` keyed by `job_id` from `POST /api/analyze` (Postgres schema shipped; persistence write path planned). Does not re-parse source or rebuild the graph.
+On-demand blast-radius for one file in a **previously analyzed** repository (latest completed job). Uses `AnalysisStore` keyed by `repo_id`, falling back to PostgreSQL via `load_pipeline_result`. Does not re-parse source or rebuild the graph.
 
-Full field reference: [SRS §8 — GET /api/impact/{repo_id}](./SRS_ProjectPlan.md#get-apiimpactrepo_id).
+Full field reference: [SRS §8 — GET /api/repos/{repo_id}/impact](./SRS_ProjectPlan.md#get-apireposrepo_idimpact).
 
 ```
 Path params:
-  repo_id: job_id returned by POST /api/analyze
+  repo_id: repositories.id returned by POST /api/analyze or POST /api/repos/analyze
 
 Query params:
   file: "mini_repo/myapp/models.py"   (URL-encoded repo-relative path)
@@ -848,19 +851,19 @@ Response 404: file not in graph (unknown or out-of-repo path)
 **Manual test (server running on port 8000):**
 
 ```bash
-# Analyze first; capture job_id
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
-  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+# Analyze first; capture repo_id
+REPO_ID=$(curl -s -X POST http://localhost:8000/api/repos/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
 
-curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" | python3 -m json.tool
+curl -s "http://localhost:8000/api/repos/${REPO_ID}/impact?file=mini_repo/myapp/models.py" | python3 -m json.tool
 ```
 
 **pytest:**
 
 ```bash
 cd backend && source .venv/bin/activate
-PYTHONPATH=. pytest tests/algorithms/test_impact.py -v    # ImpactAnalyzer (8)
-PYTHONPATH=. pytest tests/test_api.py -k impact -v         # API integration (3)
+PYTHONPATH=. pytest tests/algorithms/test_impact.py -v    # ImpactAnalyzer (9)
+PYTHONPATH=. pytest tests/test_api.py -k impact -v         # API integration
 ```
 
 ### GET /api/repos
@@ -1037,7 +1040,7 @@ Complete trace from zip upload or GitHub URL to graph appearing on screen.
     - Convert GraphResult → nx.DiGraph (once per pipeline run)
     - CycleDetector: nx.simple_cycles + rotation normalization
     - AlgorithmEngine:
-        - Untimed PageRank warm-up (excludes cold-start from metrics)
+        - Untimed PageRank warm-up (benchmark CLI only; excludes cold-start from metrics)
         - pagerank_scores = nx.pagerank(G, alpha=0.85)  [timed]
         - betweenness_scores = nx.betweenness_centrality(G)  [timed]
         - Normalize both score sets to [0, 1]
@@ -1071,7 +1074,7 @@ Complete trace from zip upload or GitHub URL to graph appearing on screen.
 15. User clicks node "auth/session.py"
          │
          ▼
-16. Frontend: GET /api/impact/{repo_id}?file=auth/session.py
+16. Frontend: GET /api/repos/{repo_id}/impact?file=auth/session.py
          │
          ▼
 17. FastAPI:
@@ -1201,7 +1204,7 @@ One table for every way to run something with **your own input** (repo path, fil
 | Per-stage timings | directory | `python -m app.benchmark --repo {repo-path}` | All stages + timing table |
 | Zip → extract → analyze | zip file | `curl -F file=@…zip …/api/analyze` or pytest — see [Ingestion](#ingestion-zip-and-github) | extract, then pipeline |
 | GitHub → clone → analyze | public repo URL | `curl -F github_url=https://github.com/owner/repo …/api/analyze` | clone, then pipeline |
-| Impact for one file | `job_id` + file path | `curl "…/api/impact/{job_id}?file=path/to/file.py"` | on-demand blast radius (after analyze) |
+| Impact for one file | `repo_id` + file path | `curl "…/api/repos/{repo_id}/impact?file=path/to/file.py"` | on-demand blast radius (after analyze) |
 | Apply DB migrations | (Postgres running) | `alembic upgrade head` | create/upgrade all SRS tables |
 | List DB tables | (Postgres running) | `docker compose exec db psql -U ripple -d ripple -c '\dt'` | 9 tables (8 SRS + `alembic_version`) |
 | Check migration revision | (Postgres running) | `docker compose exec db psql -U ripple -d ripple -c "SELECT * FROM alembic_version;"` | should show `63207e50c596` |
@@ -1242,7 +1245,7 @@ Parser, pipeline, and benchmark all take a **project root directory**. You do no
 | `pagerank_computation` | Yes | `python -m app.benchmark --repo {repo-path}` |
 | `betweenness_computation` | Yes | Same benchmark command |
 | `score_normalization` | Yes | Same benchmark command |
-| `impact_analysis` | On-demand only | `GET /api/impact/{job_id}?file=…` or `ImpactAnalyzer().analyze(digraph, file)` |
+| `impact_analysis` | On-demand only | `GET /api/repos/{repo_id}/impact?file=…` or `ImpactAnalyzer().analyze(digraph, file)` |
 | Zip extract | No | `IngestionService.ingest_zip*` or `pytest tests/test_ingestion.py` |
 | Git clone | No | `IngestionService.ingest_github` or `pytest tests/test_github_ingestion.py` |
 
@@ -1351,7 +1354,7 @@ cd backend
 source .venv/bin/activate
 PYTHONPATH=. pytest tests/test_ingestion.py -v          # zip (8)
 PYTHONPATH=. pytest tests/test_github_ingestion.py -v   # GitHub (17)
-PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP analyze + impact (14)
+PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP API (31)
 ```
 
 Skip the live GitHub clone in CI or offline runs:
@@ -1398,10 +1401,10 @@ curl -s -X POST http://localhost:8000/api/analyze \
 curl -s -X POST http://localhost:8000/api/analyze \
   -F "github_url=https://github.com/pypa/sampleproject" | python3 -m json.tool
 
-# Impact (after analyze — use job_id from response)
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
-  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
-curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" | python3 -m json.tool
+# Impact (after analyze — use repo_id from response)
+REPO_ID=$(curl -s -X POST http://localhost:8000/api/repos/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
+curl -s "http://localhost:8000/api/repos/${REPO_ID}/impact?file=mini_repo/myapp/models.py" | python3 -m json.tool
 ```
 
 **Note (zip):** if the zip contains a top-level folder (e.g. `myproject/...`), paths in the graph will include that prefix unless you point the pipeline at the inner root.
@@ -1531,7 +1534,7 @@ pytest tests/algorithms/test_cycles.py -v    # CycleDetector (8)
 pytest tests/algorithms/test_scoring.py -v    # AlgorithmEngine (13)
 pytest tests/algorithms/test_impact.py -v     # ImpactAnalyzer (8)
 pytest tests/algorithms/ -v         # cycles + scoring + impact (29)
-pytest tests/test_api.py -v         # analyze + impact API (14)
+pytest tests/test_api.py -v         # API integration (31)
 ```
 
 See [Command sheet](#command-sheet-all-inputs) for which pytest file maps to which capability. Zip-specific tests are **only** in `test_ingestion.py` (no zip CLI exists yet).

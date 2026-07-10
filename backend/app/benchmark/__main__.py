@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from app.graph.algorithms.scoring import AlgorithmEngine
 from app.metrics import format_metrics_table
 from app.pipeline import AnalysisPipeline
 
@@ -50,7 +51,13 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Not a directory: {repo_path}", file=sys.stderr)
         sys.exit(1)
 
-    result = AnalysisPipeline().run(repo_path)
+    # Warm up PageRank so cold-start NetworkX/SciPy init is excluded from the
+    # reported stage timings (see PERFORMANCE_NOTES). Production analysis skips
+    # the warm-up to avoid computing PageRank twice per request.
+    pipeline = AnalysisPipeline(
+        algorithm_engine=AlgorithmEngine(warmup_pagerank=True)
+    )
+    result = pipeline.run(repo_path)
 
     _section("Benchmark summary")
     print(f"  repo     {repo_path}")

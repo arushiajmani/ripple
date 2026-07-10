@@ -17,7 +17,7 @@ from app.parser.models import FileAnalysis
 from app.parser.repository import collect_python_files
 from app.pipeline import AnalysisPipeline
 
-FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_repo"
+from tests.support import FIXTURE_ROOT
 
 
 @pytest.fixture

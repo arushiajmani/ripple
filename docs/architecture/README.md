@@ -42,6 +42,15 @@ ImpactAnalyzer              # not a batch stage
 
 `FileAnalysis` is richer than V1 `GraphBuilder` needs — one parse feeds future class/call graphs without reparsing. See [parser-graph design](#parser-graph-design).
 
+## API resources
+
+HTTP API follows **repository → analysis jobs → results**:
+
+- **Repository routes** (`GET /api/repos/{repo_id}/…`) — default UX; latest completed job
+- **Job routes** (`GET /api/jobs/{job_id}/…`) — history, comparisons, async polling (planned)
+
+Full matrix and rollout: [api-resources.md](api-resources.md).
+
 ## Component map
 
 ```text
@@ -50,14 +59,15 @@ ImpactAnalyzer              # not a batch stage
 └─────────────────────────┬───────────────────────────────────┘
                           │ HTTP
 ┌─────────────────────────▼───────────────────────────────────┐
-│  FastAPI: POST /api/analyze, GET /api/impact/{id}             │
+│  FastAPI: Repository Analysis + Quick Analysis (POST),          │
+│           GET /api/repos/{repo_id}/graph|scores|impact         │
 │  AnalysisPipeline → IngestionService, Parser, Graph, DB       │
 └─────────────────────────┬───────────────────────────────────┘
                           │
                     PostgreSQL
 ```
 
-Shipped API: sync analyze + on-demand impact. Planned: `GET /api/status`, `GET /api/graph`, async 202.
+Shipped API: sync analyze, repo list/detail, graph/scores/impact sub-routes. Planned: job APIs, `GET /api/status`, async 202.
 
 Module docs: [backend/](../backend/).
 
@@ -96,12 +106,12 @@ Interview depth: [product/README.md](../product/README.md#interview-guide).
 
 ## Data flow (shipped today)
 
-1. User uploads zip or GitHub URL → `POST /api/analyze`
+1. User uploads zip or GitHub URL → **Repository Analysis** (`POST /api/repos/analyze`) or **Quick Analysis** (`POST /api/analyze`)
 2. `IngestionService` → temp dir `/tmp/ripple/{job_id}/`
 3. `AnalysisPipeline.run(local_path)` → `PipelineResult`
-4. Persist to PostgreSQL + `AnalysisStore.save(job_id, result)`
-5. Return full JSON; `cleanup()` removes temp dir
-6. `GET /api/impact/{job_id}?file=...` loads stored artifacts (memory or DB)
+4. Persist to PostgreSQL + `AnalysisStore.save(repo_id, result)`
+5. Return JSON; `cleanup()` removes temp dir
+6. `GET /api/repos/{repo_id}/impact?file=...` (or `/graph`, `/scores`) loads stored artifacts (memory or DB)
 
 Full 18-step trace (including planned frontend): see historical [Architecture.md](../Architecture.md) or expand in a future split doc.
 

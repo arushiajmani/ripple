@@ -19,7 +19,7 @@ from app.parser.ast_parser import ASTParser
 from app.parser.models import ImportInfo
 from app.parser.repository import collect_python_files, parse_repository
 
-FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_repo"
+from tests.support import FIXTURE_ROOT
 
 # Project layout for relative-import resolution (unit tests only).
 RELATIVE_IMPORT_FILES = {

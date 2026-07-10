@@ -71,7 +71,7 @@ Top N in JSON: `analysis.scores.slice(0, N)` — no separate `top_critical` fiel
 
 ## AnalysisStore
 
-In-memory cache: `AnalysisStore.save(job_id, result)` after analyze. Used by `GET /api/impact` until/unless loaded from PostgreSQL. Server restart clears memory; DB rows survive when persistence is enabled.
+In-memory cache: `AnalysisStore.save(repo_id, result)` after analyze. Used by repo sub-routes (`/graph`, `/scores`, `/impact`) until/unless loaded from PostgreSQL. Server restart clears memory; DB rows survive when persistence is enabled.
 
 ## Benchmark CLI
 

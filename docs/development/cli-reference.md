@@ -20,7 +20,9 @@ One table for every way to run something with **your own input** (repo path, fil
 | Per-stage timings | directory | `python -m app.benchmark --repo {repo-path}` | All stages + timing table |
 | Zip → extract → analyze | zip file | `curl -F file=@…zip …/api/analyze` or pytest — see [Ingestion](#ingestion-zip-and-github) | extract, then pipeline |
 | GitHub → clone → analyze | public repo URL | `curl -F github_url=https://github.com/owner/repo …/api/analyze` | clone, then pipeline |
-| Impact for one file | `job_id` + file path | `curl "…/api/impact/{job_id}?file=path/to/file.py"` | on-demand blast radius (after analyze) |
+| Impact for one file | `repo_id` + file path | `curl "…/api/repos/{repo_id}/impact?file=path/to/file.py"` | on-demand blast radius (after analyze) |
+
+> **Phases 1 & 2 shipped:** **Repository Analysis** (`POST /api/repos/analyze`) + repo GETs; **Quick Analysis** (`POST /api/analyze`) returns full JSON in one shot. See [api.md — Two ways to analyze](../backend/api.md#two-ways-to-analyze).
 | Apply DB migrations | (Postgres running) | `alembic upgrade head` | create/upgrade all SRS tables |
 | List DB tables | (Postgres running) | `docker compose exec db psql -U ripple -d ripple -c '\dt'` | 9 tables (8 SRS + `alembic_version`) |
 | Check migration revision | (Postgres running) | `docker compose exec db psql -U ripple -d ripple -c "SELECT * FROM alembic_version;"` | should show `63207e50c596` |
@@ -61,7 +63,7 @@ Parser, pipeline, and benchmark all take a **project root directory**. You do no
 | `pagerank_computation` | Yes | `python -m app.benchmark --repo {repo-path}` |
 | `betweenness_computation` | Yes | Same benchmark command |
 | `score_normalization` | Yes | Same benchmark command |
-| `impact_analysis` | On-demand only | `GET /api/impact/{job_id}?file=…` or `ImpactAnalyzer().analyze(digraph, file)` |
+| `impact_analysis` | On-demand only | `GET /api/repos/{repo_id}/impact?file=…` or `ImpactAnalyzer().analyze(digraph, file)` |
 | Zip extract | No | `IngestionService.ingest_zip*` or `pytest tests/test_ingestion.py` |
 | Git clone | No | `IngestionService.ingest_github` or `pytest tests/test_github_ingestion.py` |
 
@@ -170,7 +172,7 @@ cd backend
 source .venv/bin/activate
 PYTHONPATH=. pytest tests/test_ingestion.py -v          # zip (8)
 PYTHONPATH=. pytest tests/test_github_ingestion.py -v   # GitHub (17)
-PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP analyze + impact (14)
+PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP API (31)
 ```
 
 Skip the live GitHub clone in CI or offline runs:
@@ -205,22 +207,36 @@ PYTHONPATH=. pytest tests/test_github_ingestion.py -v -m "not integration"
 
 ### API — analyze via HTTP
 
+Two POST endpoints run the **same pipeline**; they differ only in response size. Detail: [backend/api.md — Two ways to analyze](../backend/api.md#two-ways-to-analyze).
+
+**Repository Analysis** (`POST /api/repos/analyze`) — slim response; then list/detail and graph/scores/impact sub-routes.
+
 ```bash
 # Server in backend/
 uvicorn app.main:app --reload
 
-# Zip (from repo root)
-curl -s -X POST http://localhost:8000/api/analyze \
+# Repository Analysis (slim — returns repo_id)
+curl -s -X POST http://localhost:8000/api/repos/analyze \
   -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -m json.tool
 
-# GitHub (requires git on server)
-curl -s -X POST http://localhost:8000/api/analyze \
-  -F "github_url=https://github.com/pypa/sampleproject" | python3 -m json.tool
+REPO_ID=$(curl -s -X POST http://localhost:8000/api/repos/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
 
-# Impact (after analyze — use job_id from response)
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
-  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
-curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" | python3 -m json.tool
+curl -s "http://localhost:8000/api/repos/${REPO_ID}" | python3 -m json.tool
+curl -s http://localhost:8000/api/repos | python3 -m json.tool
+
+# Sub-routes (latest completed job)
+curl -s "http://localhost:8000/api/repos/${REPO_ID}/graph" | python3 -m json.tool
+curl -s "http://localhost:8000/api/repos/${REPO_ID}/scores" | python3 -m json.tool
+curl -s "http://localhost:8000/api/repos/${REPO_ID}/impact?file=mini_repo/myapp/models.py" | python3 -m json.tool
+```
+
+**Quick Analysis** (`POST /api/analyze`) — full graph, scores, and files in one response (scripts, debugging).
+
+```bash
+curl -s -X POST http://localhost:8000/api/analyze \
+  -F "file=@backend/tests/fixtures/mini_repo.zip" | python3 -m json.tool
 ```
 
 **Note (zip):** if the zip contains a top-level folder (e.g. `myproject/...`), paths in the graph will include that prefix unless you point the pipeline at the inner root.
@@ -350,7 +366,7 @@ pytest tests/algorithms/test_cycles.py -v    # CycleDetector (8)
 pytest tests/algorithms/test_scoring.py -v    # AlgorithmEngine (13)
 pytest tests/algorithms/test_impact.py -v     # ImpactAnalyzer (8)
 pytest tests/algorithms/ -v         # cycles + scoring + impact (29)
-pytest tests/test_api.py -v         # analyze + impact API (14)
+pytest tests/test_api.py -v         # API integration (31)
 ```
 
 See [Command sheet](#command-sheet-all-inputs) for which pytest file maps to which capability. Zip-specific tests are **only** in `test_ingestion.py` (no zip CLI exists yet).

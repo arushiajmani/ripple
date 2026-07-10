@@ -22,7 +22,6 @@ import pytest
 
 from app.graph import (
     AlgorithmEngine,
-    GraphAdapter,
     GraphResult,
     ImpactAnalyzer,
     ImpactLayer,
@@ -31,18 +30,14 @@ from app.graph import (
 from app.graph.algorithms.impact import FileNotInGraphError
 from app.parser.models import FileAnalysis
 
-from tests.algorithms.helpers import make_file
-
-
-def _to_digraph(graph: GraphResult) -> nx.DiGraph:
-    return GraphAdapter().to_digraph(graph)
+from tests.support import make_file, to_digraph
 
 
 # --- Linear chain ---
 
 def test_linear_chain_direct_vs_indirect_dependents() -> None:
     """A → B → C: targeting C yields B direct and A indirect at depth 2."""
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["a.py", "b.py", "c.py"],
             edges=[("a.py", "b.py"), ("b.py", "c.py")],
@@ -68,7 +63,7 @@ def test_linear_chain_direct_vs_indirect_dependents() -> None:
 
 def test_diamond_no_duplicate_files_across_layers() -> None:
     """D imports B and C; both import A — each dependent appears once."""
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["a.py", "b.py", "c.py", "d.py"],
             edges=[
@@ -103,7 +98,7 @@ def test_diamond_no_duplicate_files_across_layers() -> None:
 
 def test_cycle_ancestors_terminate_and_nodes_impact_each_other() -> None:
     """A ↔ B: each file lists the other as direct only (no indirect)."""
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["a.py", "b.py"],
             edges=[("a.py", "b.py"), ("b.py", "a.py")],
@@ -128,7 +123,7 @@ def test_cycle_ancestors_terminate_and_nodes_impact_each_other() -> None:
 
 def test_leaf_node_has_empty_impact_and_zero_percent() -> None:
     """Nothing imports the target — empty dependents, 0% impact, no divide-by-zero."""
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["top.py", "base.py"],
             edges=[("top.py", "base.py")],
@@ -150,7 +145,7 @@ def test_leaf_node_has_empty_impact_and_zero_percent() -> None:
 # --- Missing file ---
 
 def test_missing_file_raises_clear_error() -> None:
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["a.py"],
             edges=[],
@@ -184,7 +179,7 @@ def test_reuses_existing_criticality_score_for_target(
 
 
 def test_target_score_none_when_scores_not_provided() -> None:
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["a.py", "b.py"],
             edges=[("a.py", "b.py")],
@@ -198,7 +193,7 @@ def test_target_score_none_when_scores_not_provided() -> None:
 
 
 def test_analyze_with_metrics_reports_stage_timing() -> None:
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["a.py", "b.py"],
             edges=[("a.py", "b.py")],
@@ -215,7 +210,7 @@ def test_analyze_with_metrics_reports_stage_timing() -> None:
 
 def test_files_affected_percentage_rounded_to_three_decimals() -> None:
     """1 of 3 files affected → 33.333%."""
-    digraph = _to_digraph(
+    digraph = to_digraph(
         GraphResult(
             nodes=["a.py", "b.py", "c.py"],
             edges=[("a.py", "c.py")],

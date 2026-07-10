@@ -147,7 +147,7 @@ def impact_target_score_to_dict(score: NodeScore) -> dict[str, Any]:
 
 
 def impact_analysis_to_dict(result: ImpactAnalysisResult) -> dict[str, Any]:
-    """On-demand blast-radius payload for ``GET /api/impact/{repo_id}``."""
+    """On-demand blast-radius payload for ``GET /api/repos/{repo_id}/impact``."""
     target_payload: dict[str, Any] = {"file": result.target.file}
     if result.target.score is not None:
         target_payload["score"] = impact_target_score_to_dict(result.target.score)
@@ -173,12 +173,22 @@ def impact_analysis_to_dict(result: ImpactAnalysisResult) -> dict[str, Any]:
 # --- Section builders ---
 
 
+def to_utc_iso_z(value: datetime) -> str:
+    """Format a datetime as UTC ISO-8601 with a ``Z`` suffix.
+
+    Naive datetimes are assumed to already be UTC (matches how timestamps are
+    stored in the database). The ``Z`` suffix is easier for clients than
+    ``+00:00``.
+    """
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def build_metadata(*, generated_at: datetime | None = None) -> dict[str, Any]:
     """When this document was produced (UTC ISO-8601)."""
     when = generated_at or datetime.now(timezone.utc)
-    # Stable Z suffix for UTC (easier for clients than +00:00).
-    timestamp = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return {"generated_at": timestamp}
+    return {"generated_at": to_utc_iso_z(when)}
 
 
 def build_repository(*, name: str, source: str) -> dict[str, str]:
@@ -186,14 +196,35 @@ def build_repository(*, name: str, source: str) -> dict[str, str]:
     return {"name": name, "source": source}
 
 
+def summary_fields(
+    *,
+    file_count: int,
+    node_count: int,
+    edge_count: int,
+    cycle_count: int,
+) -> dict[str, int]:
+    """Canonical ``summary`` block shape.
+
+    Single source of truth shared by the pipeline path (``build_summary`` from a
+    live ``PipelineResult``) and the repo-centric API (from persisted
+    ``AnalysisStatistics`` rows), so the field set can never drift between them.
+    """
+    return {
+        "file_count": file_count,
+        "node_count": node_count,
+        "edge_count": edge_count,
+        "cycle_count": cycle_count,
+    }
+
+
 def build_summary(result: PipelineResult) -> dict[str, Any]:
     """Graph-level counts (structure + cycles), not parser detail."""
-    return {
-        "file_count": len(result.analyses),
-        "node_count": len(result.graph.nodes),
-        "edge_count": len(result.graph.edges),
-        "cycle_count": result.cycles.cycle_count,
-    }
+    return summary_fields(
+        file_count=len(result.analyses),
+        node_count=len(result.graph.nodes),
+        edge_count=len(result.graph.edges),
+        cycle_count=result.cycles.cycle_count,
+    )
 
 
 def build_statistics(result: PipelineResult) -> dict[str, Any]:

@@ -1,6 +1,6 @@
 # JSON Format
 
-> Produced by `PipelineResult.write_json()` and `POST /api/analyze`. Implementation: `app/pipeline/serialize.py`.
+> Produced by `PipelineResult.write_json()` and **Quick Analysis** (`POST /api/analyze`). **Repository Analysis** returns only ids — use `GET /api/repos/{repo_id}/graph` etc. Implementation: `app/pipeline/serialize.py`.
 
 ## Top-level shape
 

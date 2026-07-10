@@ -153,7 +153,7 @@ Full property glossary: [learn.md — What each property means](./learn.md#1-wha
 cd backend && source .venv/bin/activate
 PYTHONPATH=. pytest tests/test_ingestion.py -v          # zip (8)
 PYTHONPATH=. pytest tests/test_github_ingestion.py -v   # GitHub (17)
-PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP analyze + impact (14)
+PYTHONPATH=. pytest tests/test_api.py -v                 # HTTP API (31)
 
 # Manual: local directory → pipeline → JSON
 python -m app.pipeline tests/fixtures/mini_repo --json result.json
@@ -165,10 +165,10 @@ curl -s -X POST http://localhost:8000/api/analyze \
 curl -s -X POST http://localhost:8000/api/analyze \
   -F "github_url=https://github.com/pypa/sampleproject" | python3 -m json.tool
 
-# Impact (after analyze — use job_id from response)
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
-  -F "file=@tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
-curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" | python3 -m json.tool
+# Impact (after analyze — use repo_id from response)
+REPO_ID=$(curl -s -X POST http://localhost:8000/api/repos/analyze \
+  -F "file=@tests/fixtures/mini_repo.zip" | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
+curl -s "http://localhost:8000/api/repos/${REPO_ID}/impact?file=mini_repo/myapp/models.py" | python3 -m json.tool
 
 # Benchmark: per-stage timing breakdown
 python -m app.benchmark --repo tests/fixtures/mini_repo
@@ -257,18 +257,32 @@ If the prompt shows `ripple-#` instead of `ripple=#`, PostgreSQL is waiting for 
 
 ---
 
-### Week 5 — Graph Endpoints *(impact shipped)*
+### Week 5 — Graph Endpoints *(repo-centric API Phases 1 & 2 shipped)*
+
+**Implementation spec:** [product/repo-centric-api-plan.md](./product/repo-centric-api-plan.md)
 
 #### Tasks
 
 - [x] Implement `ImpactAnalyzer` in `backend/app/graph/algorithms/impact.py` — on-demand blast radius (direct + transitive dependents, hop-distance layers)
-- [x] Implement `AnalysisStore` — in-memory `PipelineResult` cache by `job_id` for on-demand queries (PostgreSQL schema shipped; API still reads from in-memory store until write path lands)
-- [x] Implement `GET /api/impact/{repo_id}?file=path/to/file.py` — returns impact analysis ([SRS §8](./SRS_ProjectPlan.md#get-apiimpactrepo_id); `tests/algorithms/test_impact.py`, 8 cases; `tests/test_api.py`, 3 impact cases)
-- [ ] Implement `GET /api/graph/{repo_id}` — returns full graph JSON (nodes, edges, scores, cycles); optional `?top=N` to slice scores
-- [ ] Implement `GET /api/repos` — returns list of all analyzed repos
+- [x] Implement `AnalysisStore` — in-memory `PipelineResult` cache keyed by `repo_id`
+- [x] Implement `GET /api/repos/{repo_id}/impact?file=...` — requires `repositories.id` (standalone `GET /api/impact/{repo_id}` removed as duplicate)
+- [x] PostgreSQL persist on analyze — `persist_pipeline_result()` + `load_pipeline_result()` ([persistence.md](./backend/persistence.md))
+- [x] **Repo-centric API Phase 1** per [repo-centric-api-plan.md](./product/repo-centric-api-plan.md):
+  - [x] `persist_pipeline_result()` → `PersistResult(repository_id, job_id)`
+  - [x] `get_latest_completed_job(repo_id)` query helper
+  - [x] `POST /api/repos/analyze` — slim `{ repo_id, job_id, status }`
+  - [x] `GET /api/repos` — list repositories
+  - [x] `GET /api/repos/{repo_id}` — latest job summary
+- [x] **Repo-centric API Phase 2** — [repo-centric-api-plan.md](./product/repo-centric-api-plan.md):
+  - [x] `GET /api/repos/{repo_id}/graph`, `/scores`, `/impact` (latest job)
+- [ ] **Job APIs Phase 3** — [api-resources.md](./architecture/api-resources.md):
+  - [ ] `GET /api/jobs/{job_id}`, job sub-routes
+  - [ ] Optional `GET /api/repos/{repo_id}/jobs` (history)
 - [ ] Add proper HTTP error responses (404 for unknown repo_id, 422 for invalid inputs)
 - [ ] Add CORS configuration so React frontend can call the API
-- [ ] Write integration tests for all endpoints using FastAPI's `TestClient` *(partial: `tests/test_api.py` covers sync `POST /api/analyze` and `GET /api/impact` — 14 cases)*
+- [ ] Write integration tests for all endpoints using FastAPI's `TestClient` *(partial: `tests/test_api.py` — 31 cases covering analyze, repos, graph, scores, impact)*
+
+**Phase 3 (not Phase 2):** `GET /jobs`, `GET /jobs/{job_id}`, `GET /api/repos/{repo_id}/jobs`
 
 #### Milestone Check
 
@@ -277,13 +291,13 @@ Impact endpoint (shipped):
 ```bash
 cd backend && source .venv/bin/activate
 uvicorn app.main:app --reload &
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
+REPO_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
   -F "file=@tests/fixtures/mini_repo.zip" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
-curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" | python3 -m json.tool
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
+curl -s "http://localhost:8000/api/repos/${REPO_ID}/impact?file=mini_repo/myapp/models.py" | python3 -m json.tool
 ```
 
-Remaining Week 5: graph + repos endpoints; CORS; full Swagger coverage. API contract: [SRS §8 — GET /api/impact/{repo_id}](./SRS_ProjectPlan.md#get-apiimpactrepo_id).
+Repo-centric Phases 1 & 2 shipped. Remaining Week 5: job APIs (Phase 3), CORS, full Swagger coverage.
 
 #### The Impact Analysis Algorithm (Explained)
 
@@ -346,7 +360,7 @@ Real repo graph renders correctly in browser. Nodes are colored and sized by cri
 #### Tasks
 
 - [ ] Implement node click handler — selected node gets highlighted border
-- [ ] On node click, call `GET /api/impact/{repo_id}?file={selected_file}`
+- [ ] On node click, call `GET /api/repos/{repo_id}/impact?file={selected_file}`
 - [ ] Highlight direct dependents in orange, transitive dependents in light red, unaffected nodes dimmed
 - [ ] Build `Sidebar` component with three panels:
   - `CriticalFilesList` — top 10 files ranked by criticality score with score displayed

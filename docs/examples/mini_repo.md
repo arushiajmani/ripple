@@ -79,11 +79,11 @@ Scores are **relative within this repo** — not comparable across projects.
 After HTTP analyze of `tests/fixtures/mini_repo.zip`:
 
 ```bash
-JOB_ID=$(curl -s -X POST http://localhost:8000/api/analyze \
+REPO_ID=$(curl -s -X POST http://localhost:8000/api/repos/analyze \
   -F "file=@tests/fixtures/mini_repo.zip" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
 
-curl -s "http://localhost:8000/api/impact/${JOB_ID}?file=mini_repo/myapp/models.py" \
+curl -s "http://localhost:8000/api/repos/${REPO_ID}/impact?file=mini_repo/myapp/models.py" \
   | python3 -m json.tool
 ```
 

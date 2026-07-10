@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.context import RepositoryPersistContext
+from app.db.context import PersistResult, RepositoryPersistContext
 from app.db.models import (
     AnalysisJob,
     AnalysisStatistics,
@@ -64,7 +64,7 @@ def persist_pipeline_result(
     job_id: str,
     result: PipelineResult,
     context: RepositoryPersistContext,
-) -> uuid.UUID:
+) -> PersistResult:
     """Convert a ``PipelineResult`` into rows across all analysis tables."""
     job_uuid = uuid.UUID(job_id)
     repository = get_or_create_repository(session, context)
@@ -89,7 +89,7 @@ def persist_pipeline_result(
     _insert_cycles(session, job_uuid, result, file_ids)
     _insert_statistics(session, job_uuid, result)
 
-    return job_uuid
+    return PersistResult(repository_id=repository.id, job_id=job_uuid)
 
 
 def _file_paths(result: PipelineResult) -> list[str]:

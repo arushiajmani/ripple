@@ -1,4 +1,4 @@
-from app.graph.adapter import GraphAdapter, graph_result_to_digraph
+from app.graph.adapter import GraphAdapter
 from app.graph.algorithms import (
     AlgorithmEngine,
     CycleDetector,
@@ -34,5 +34,4 @@ __all__ = [
     "ImpactTarget",
     "NodeScore",
     "ScoringResult",
-    "graph_result_to_digraph",
 ]
